@@ -1,0 +1,50 @@
+{
+  "taken_at": "2026-10-20T09:00:00",
+  "source": "sample",
+  "tables": {
+    "TB_ORDER": {
+      "owner": "APP", "comment": "주문", "num_rows": 120000,
+      "columns": [
+        {"name": "ORD_NO", "type": "VARCHAR2", "length": 12, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "주문번호", "id": 1},
+        {"name": "CUST_ID", "type": "VARCHAR2", "length": 10, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "고객ID", "id": 2},
+        {"name": "STATUS", "type": "VARCHAR2", "length": 2, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "상태(01접수,02확정,03출고)", "id": 3},
+        {"name": "ORD_DT", "type": "VARCHAR2", "length": 8, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "주문일자", "id": 4},
+        {"name": "QTY", "type": "NUMBER", "length": 22, "char_used": null, "precision": 9, "scale": 0, "nullable": true, "comment": "수량", "id": 5},
+        {"name": "AMT", "type": "NUMBER", "length": 22, "char_used": null, "precision": 15, "scale": 2, "nullable": true, "comment": "금액", "id": 6},
+        {"name": "UPD_DT", "type": "DATE", "length": 7, "char_used": null, "precision": null, "scale": null, "nullable": true, "comment": "수정일시", "id": 7}
+      ],
+      "pk": ["ORD_NO"], "unique": [], "fks": [{"columns": ["CUST_ID"], "ref_table": "TB_CUST", "ref_columns": ["CUST_ID"]}]
+    },
+    "TB_CUST": {
+      "owner": "APP", "comment": "고객", "num_rows": 5000,
+      "columns": [
+        {"name": "CUST_ID", "type": "VARCHAR2", "length": 10, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "고객ID", "id": 1},
+        {"name": "CUST_NM", "type": "VARCHAR2", "length": 20, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "고객명", "id": 2},
+        {"name": "GRADE", "type": "CHAR", "length": 1, "char_used": "B", "precision": null, "scale": null, "nullable": true, "comment": "등급", "id": 3},
+        {"name": "CREDIT_AMT", "type": "NUMBER", "length": 22, "char_used": null, "precision": 15, "scale": 0, "nullable": true, "comment": "여신금액", "id": 4},
+        {"name": "REMARK", "type": "VARCHAR2", "length": 30, "char_used": "B", "precision": null, "scale": null, "nullable": true, "comment": "비고", "id": 5}
+      ],
+      "pk": ["CUST_ID"], "unique": [], "fks": []
+    },
+    "TB_ORDER_HIST": {
+      "owner": "APP", "comment": "주문이력", "num_rows": 900000,
+      "columns": [
+        {"name": "ORD_NO", "type": "VARCHAR2", "length": 12, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "주문번호", "id": 1},
+        {"name": "STATUS", "type": "VARCHAR2", "length": 2, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "상태", "id": 2},
+        {"name": "CUST_NM", "type": "VARCHAR2", "length": 20, "char_used": "B", "precision": null, "scale": null, "nullable": true, "comment": "고객명", "id": 3},
+        {"name": "HIST_DT", "type": "DATE", "length": 7, "char_used": null, "precision": null, "scale": null, "nullable": false, "comment": "이력일시", "id": 4}
+      ],
+      "pk": [], "unique": [], "fks": []
+    },
+    "TB_CUST_SUM": {
+      "owner": "APP", "comment": "고객별 집계", "num_rows": 4800,
+      "columns": [
+        {"name": "CUST_ID", "type": "VARCHAR2", "length": 10, "char_used": "B", "precision": null, "scale": null, "nullable": false, "comment": "고객ID", "id": 1},
+        {"name": "TOT_AMT", "type": "NUMBER", "length": 22, "char_used": null, "precision": 17, "scale": 2, "nullable": true, "comment": "합계금액", "id": 2},
+        {"name": "SUM_DT", "type": "DATE", "length": 7, "char_used": null, "precision": null, "scale": null, "nullable": true, "comment": "집계일시", "id": 3}
+      ],
+      "pk": ["CUST_ID"], "unique": [], "fks": []
+    }
+  },
+  "synonyms": {}
+}

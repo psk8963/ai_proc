@@ -1,0 +1,12 @@
+# ai_nexacro 와 같은 버전으로 고정 (폐쇄망 재현용). nexacro 전용 패키지(chromadb, pandas, pypdf 등)는 뺐다.
+# 오프라인 설치: 인터넷 PC에서 make_wheels.bat 실행 → 폐쇄망에서
+#               python -m pip install --no-index --find-links wheels -r requirements.txt
+fastapi==0.143.0
+uvicorn==0.54.0
+pydantic==2.14.1
+python-multipart==0.0.32
+langchain-core==1.6.10
+langchain-ollama==1.1.0
+langgraph==1.2.15
+# Oracle 드라이버(thin 모드는 Instant Client 불필요). 처음 설치 후 `pip show oracledb` 버전으로 고정하세요.
+oracledb>=3.4

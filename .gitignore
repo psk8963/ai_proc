@@ -1,0 +1,20 @@
+# 가상환경 · 캐시
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 실행 중 생성되는 데이터 (PC마다 새로 만든다 · 회사 소스/DB 정보가 들어가므로 올리지 않는다)
+source_repository/
+analysis_index/
+
+# wheels 생성 기록
+make_wheels_log.txt
+
+# 작업용 백업 · 개인 설정(DB 비밀번호)
+_backup_original/
+.env
+.vscode/
+*.log
+instantclient_*/

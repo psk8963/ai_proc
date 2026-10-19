@@ -1,0 +1,82 @@
+/*****************************************************************
+ * ORD010 : 접수 주문을 읽어 확정 처리하고 이력을 남긴다.
+ *****************************************************************/
+#include <stdio.h>
+#include <string.h>
+#include "common.h"
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+    char    h_ord_no[13];
+    char    h_cust_id[LEN_CUST_ID + 1];
+    char    h_cust_nm[LEN_CUST_NM + 1];   /* CUST_NM VARCHAR2(20) */
+    char    h_status[LEN_STATUS + 1];
+    int     h_qty;
+    double  h_amt;
+    short   i_cust_nm;
+    char    h_work_dt[9];
+EXEC SQL END DECLARE SECTION;
+
+int fetch_orders(void);
+int confirm_order(char *ord_no);
+
+int main(int argc, char *argv[])
+{
+    EXEC SQL CONNECT :uid;
+    EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+
+    strcpy(h_work_dt, argv[1]);
+    if (fetch_orders() < 0) {
+        return -1;
+    }
+    EXEC SQL COMMIT WORK RELEASE;
+    return 0;
+
+sql_error:
+    printf("ORA error %d\n", sqlca.sqlcode);
+    EXEC SQL ROLLBACK RELEASE;
+    return -1;
+}
+
+int fetch_orders(void)
+{
+    int cnt = 0;
+
+    EXEC SQL DECLARE c_ord CURSOR FOR
+        SELECT O.ORD_NO,
+               O.CUST_ID,
+               C.CUST_NM,
+               O.QTY,
+               O.AMT
+          FROM TB_ORDER O, TB_CUST C
+         WHERE O.CUST_ID = C.CUST_ID
+           AND O.STATUS  = '01'          -- 접수
+           AND O.ORD_DT  = :h_work_dt;
+
+    EXEC SQL OPEN c_ord;
+
+    for (;;) {
+        EXEC SQL FETCH c_ord INTO :h_ord_no, :h_cust_id, :h_cust_nm, :h_qty, :h_amt;
+        if (sqlca.sqlcode == 1403) break;
+
+        if (confirm_order(h_ord_no) < 0) return -1;
+        cnt++;
+    }
+    EXEC SQL CLOSE c_ord;
+    return cnt;
+}
+
+int confirm_order(char *ord_no)
+{
+    EXEC SQL UPDATE TB_ORDER
+                SET STATUS = '02',
+                    UPD_DT = SYSDATE
+              WHERE ORD_NO = :h_ord_no;
+
+    EXEC SQL INSERT INTO TB_ORDER_HIST (ORD_NO, STATUS, CUST_NM, HIST_DT)
+             VALUES (:h_ord_no, '02', :h_cust_nm, SYSDATE);
+
+    if (sqlca.sqlcode != 0) return -1;
+    return 0;
+}

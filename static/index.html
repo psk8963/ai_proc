@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro*C 영향도 분석 에이전트</title>
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --bg-color: #f3f4f6;
+            --panel-bg: #ffffff;
+            --text-main: #1f2937;
+            --text-muted: #6b7280;
+            --border-color: #e5e7eb;
+            --ok: #16a34a;
+            --warn: #d97706;
+            --err: #dc2626;
+            --mono: Consolas, "D2Coding", "Courier New", monospace;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0; padding: 20px; background-color: var(--bg-color); color: var(--text-main);
+        }
+        .container { max-width: 1600px; margin: 0 auto; display: flex; gap: 20px; height: calc(100vh - 40px); }
+        .panel {
+            background: var(--panel-bg); padding: 20px; border-radius: 16px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03);
+        }
+        .sidebar { width: 310px; display: flex; flex-direction: column; flex-shrink: 0; overflow-y: auto; gap: 4px; }
+        .main { flex-grow: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+        h3 { margin: 0 0 10px; color: var(--text-main); font-size: 1.02rem; border-bottom: 2px solid var(--border-color); padding-bottom: 10px; }
+        h4 { margin: 14px 0 6px; font-size: 0.88rem; color: var(--text-main); }
+        .muted { color: var(--text-muted); font-size: 0.82rem; }
+        .mono { font-family: var(--mono); }
+
+        button {
+            padding: 9px 14px; background: var(--primary-color); color: white; border: none;
+            border-radius: 8px; cursor: pointer; font-weight: 600; transition: background 0.2s; font-size: 0.86rem;
+        }
+        button:hover { background: #1d4ed8; }
+        button:disabled { background: #93c5fd; cursor: not-allowed; }
+        button.ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border-color); font-weight: 500; }
+        button.ghost:hover { background: #f1f5f9; }
+        button.small { padding: 4px 9px; font-size: 0.76rem; }
+        button.danger { background: transparent; color: var(--err); border: 1px solid #fecaca; }
+        button.danger:hover { background: #fef2f2; }
+        input[type="text"], input[type="number"], select, textarea {
+            padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.88rem; outline: none;
+            font-family: inherit; background: #fff; min-width: 0;
+        }
+        input:focus, select:focus, textarea:focus { border-color: var(--primary-color); }
+        input[type="file"] { width: 100%; font-size: 0.82rem; margin: 4px 0 6px; }
+        .row { display: flex; gap: 8px; align-items: center; }
+        .row > * { flex-shrink: 1; }
+        .grow { flex: 1; }
+        .status-line { font-size: 0.8rem; margin: 6px 0 0; min-height: 1em; white-space: pre-wrap; }
+        .status-line.ok { color: var(--ok); } .status-line.err { color: var(--err); }
+
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 6px 0; }
+        .stat { background: #f8fafc; border: 1px solid var(--border-color); border-radius: 8px; padding: 6px 8px; }
+        .stat .n { font-weight: 700; font-size: 1rem; }
+        .stat .l { font-size: 0.7rem; color: var(--text-muted); }
+        .db-box { font-size: 0.82rem; background: #f8fafc; border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 10px; }
+        .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: #9ca3af; }
+        .dot.on { background: var(--ok); } .dot.off { background: var(--err); }
+
+        /* 탭 */
+        .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border-color); margin-bottom: 12px; flex-shrink: 0; }
+        .tabs button { background: transparent; color: var(--text-muted); border-radius: 8px 8px 0 0; padding: 10px 16px; font-size: 0.9rem; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+        .tabs button:hover { background: #f1f5f9; }
+        .tabs button.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
+        .tab-page { display: none; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+        .tab-page.active { display: flex; }
+        .scroll { overflow: auto; min-height: 0; }
+
+        /* 대화 */
+        #chat-box { flex-grow: 1; overflow-y: auto; padding: 10px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 14px; }
+        .msg-wrapper { display: flex; width: 100%; }
+        .msg-wrapper.user { justify-content: flex-end; }
+        .msg { max-width: 88%; padding: 12px 16px; border-radius: 16px; line-height: 1.6; font-size: 0.92rem; box-shadow: 0 1px 2px rgba(0,0,0,0.05); overflow-wrap: break-word; min-width: 0; }
+        .msg.user { background: var(--primary-color); color: white; border-bottom-right-radius: 4px; white-space: pre-wrap; }
+        .msg.bot { background: #f8fafc; border: 1px solid var(--border-color); border-bottom-left-radius: 4px; }
+        .msg.bot.error { border-color: #fecaca; background: #fef2f2; }
+        .msg h1, .msg h2, .msg h3, .msg h4, .msg h5 { font-size: 0.98rem; margin: 14px 0 6px; border: none; padding: 0; }
+        .msg p { margin: 6px 0; }
+        .msg ul, .msg ol { margin: 6px 0; padding-left: 22px; }
+        .input-area { display: flex; gap: 10px; flex-shrink: 0; }
+        .input-area input { flex: 1; padding: 13px 14px; }
+        .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .examples button { background: #eef2ff; color: #3730a3; font-weight: 500; padding: 5px 10px; font-size: 0.8rem; }
+        .examples button:hover { background: #e0e7ff; }
+
+        .badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; margin-right: 6px; white-space: nowrap; }
+        .badge.SUCCESS { background: #dcfce7; color: var(--ok); }
+        .badge.UNCERTAIN { background: #fef3c7; color: var(--warn); }
+        .badge.INSUFFICIENT_EVIDENCE { background: #fee2e2; color: var(--err); }
+        .badge.intent { background: #e0e7ff; color: #3730a3; }
+        .badge.ERROR { background: #fee2e2; color: var(--err); }
+        .badge.WARN { background: #fef3c7; color: #b45309; }
+        .badge.INFO { background: #e0f2fe; color: #0369a1; }
+        .badge.R { background: #e0f2fe; color: #0369a1; } .badge.W { background: #fee2e2; color: var(--err); }
+        .badge.RW { background: #fae8ff; color: #86198f; } .badge.Q { background: #f1f5f9; color: var(--text-muted); }
+        .notes { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: #fffbeb; border: 1px solid #fde68a; font-size: 0.83rem; }
+        .notes ul { margin: 0; padding-left: 18px; }
+        .evidence { font-size: 0.8rem; color: var(--text-muted); margin-top: 10px; background: #f1f5f9; padding: 8px 10px; border-radius: 8px; }
+        .evidence summary { cursor: pointer; font-weight: 600; }
+        .evidence ul { padding-left: 20px; margin: 6px 0 0; }
+        .typing { display: inline-flex; gap: 4px; }
+        .typing span { animation: blink 1.4s infinite both; height: 6px; width: 6px; background: var(--text-muted); border-radius: 50%; }
+        .typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
+        @keyframes blink { 0% { opacity: .2; } 20% { opacity: 1; } 100% { opacity: .2; } }
+
+        pre { background: #1e293b; color: #f8fafc; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 0.82rem; margin: 6px 0; font-family: var(--mono); }
+        code.inline { background: #e2e8f0; padding: 1px 5px; border-radius: 4px; font-size: 0.88em; font-family: var(--mono); }
+        table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.82rem; }
+        th, td { border: 1px solid var(--border-color); padding: 6px 8px; text-align: left; vertical-align: top; }
+        th { background: #f1f5f9; position: sticky; top: 0; z-index: 1; white-space: nowrap; }
+        td.code { white-space: nowrap; font-family: var(--mono); }
+        tr.clickable { cursor: pointer; } tr.clickable:hover td { background: #eff6ff; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        /* 영향도 */
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; align-items: end; }
+        .form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--text-muted); font-weight: 600; }
+        .form-grid label.check { flex-direction: row; align-items: center; gap: 6px; font-weight: 500; }
+        .summary-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+        .chip { border-radius: 10px; padding: 8px 12px; border: 1px solid var(--border-color); background: #fff; font-size: 0.82rem; }
+        .chip b { font-size: 1.1rem; margin-right: 4px; }
+        .chip.e b { color: var(--err); } .chip.w b { color: #b45309; } .chip.i b { color: #0369a1; }
+        .result-card { border: 1px solid var(--border-color); border-radius: 12px; padding: 12px 14px; margin: 10px 0; background: #fff; }
+        .result-card h4 { margin-top: 0; }
+        .msg-cell { max-width: 520px; }
+        .path { color: var(--text-muted); font-size: 0.75rem; }
+
+        /* DB / 탐색 */
+        .split { display: flex; gap: 14px; flex: 1; min-height: 0; }
+        .list-pane { width: 290px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--border-color); border-radius: 10px; }
+        .list-pane input { margin: 8px; }
+        .list-items { overflow: auto; flex: 1; }
+        .list-items div.item { padding: 7px 10px; border-top: 1px solid var(--border-color); cursor: pointer; font-size: 0.82rem; }
+        .list-items div.item:hover { background: #f1f5f9; }
+        .list-items div.item.active { background: #eff6ff; }
+        .list-items .sub { color: var(--text-muted); font-size: 0.72rem; }
+        .detail-pane { flex: 1; min-width: 0; overflow: auto; }
+        textarea.sql { width: 100%; height: 130px; font-family: var(--mono); font-size: 0.85rem; resize: vertical; }
+        .grid-wrap { overflow: auto; max-height: 48vh; border: 1px solid var(--border-color); border-radius: 8px; }
+        .grid-wrap table { margin: 0; }
+        .grid-wrap td { white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 0.78rem; }
+        .seg { display: inline-flex; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+        .seg button { background: transparent; color: var(--text-muted); border-radius: 0; padding: 6px 12px; }
+        .seg button.active { background: #eff6ff; color: var(--primary-color); }
+
+        /* 코드 보기 */
+        .modal-back { position: fixed; inset: 0; background: rgba(15,23,42,0.45); display: none; z-index: 50; align-items: center; justify-content: center; padding: 20px; }
+        .modal-back.open { display: flex; }
+        .modal { background: #fff; border-radius: 14px; width: min(1100px, 100%); max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+        .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border-color); gap: 10px; }
+        .modal-body { overflow: auto; padding: 0; background: #0f172a; }
+        .code-lines { font-family: var(--mono); font-size: 0.8rem; color: #e2e8f0; margin: 0; padding: 8px 0; }
+        .code-lines div { white-space: pre; padding: 0 14px 0 0; }
+        .code-lines .ln { display: inline-block; width: 58px; color: #64748b; text-align: right; padding-right: 12px; user-select: none; }
+        .code-lines .hl { background: #854d0e55; }
+        .code-lines .sql { color: #93c5fd; }
+
+        @media (max-width: 1000px) {
+            body { padding: 12px; }
+            .container { flex-direction: column; height: auto; }
+            .sidebar { width: 100%; }
+            .main { height: 88vh; }
+            .split { flex-direction: column; }
+            .list-pane { width: 100%; max-height: 260px; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <!-- 사이드바: 자산 등록 / 현황 / DB -->
+    <div class="panel sidebar">
+        <h3>분석 자산 등록</h3>
+        <div class="muted">① Pro*C 소스 (.pc .c .h, zip 가능)</div>
+        <input type="file" id="srcFiles" multiple accept=".pc,.pcc,.c,.cpp,.h,.hpp,.zip">
+        <button onclick="uploadAssets('source')">소스 업로드</button>
+        <div class="muted" style="margin-top:10px">② 배치 스크립트 (.sh .ksh .bat ..., zip 가능)</div>
+        <input type="file" id="batchFiles" multiple>
+        <button onclick="uploadAssets('batch')">배치 업로드</button>
+        <details style="margin-top:10px">
+            <summary class="muted" style="cursor:pointer">이 PC 폴더에서 바로 가져오기</summary>
+            <input type="text" id="folderPath" placeholder="예: D:\src\batch\proc" style="width:100%;margin:6px 0">
+            <div class="row">
+                <select id="folderKind"><option value="source">소스</option><option value="batch">배치</option></select>
+                <button class="grow" onclick="importFolder()">가져오기</button>
+            </div>
+        </details>
+        <p id="uploadStatus" class="status-line" role="status"></p>
+
+        <h3 style="margin-top:12px">등록 현황</h3>
+        <div class="stats" id="stats"></div>
+        <div id="statWarn" class="muted"></div>
+        <div class="row" style="margin-top:6px">
+            <button class="danger small" onclick="clearAssets('source')">소스 비우기</button>
+            <button class="danger small" onclick="clearAssets('batch')">배치 비우기</button>
+        </div>
+
+        <h3 style="margin-top:16px">Oracle DB</h3>
+        <div class="db-box" id="dbBox">불러오는 중…</div>
+        <div class="row" style="margin-top:8px">
+            <button class="ghost small grow" onclick="checkDb()">연결 확인</button>
+            <button class="small grow" id="refreshMetaBtn" onclick="refreshMeta()">메타데이터 갱신</button>
+        </div>
+        <p id="dbStatus" class="status-line"></p>
+        <div class="muted" id="llmInfo" style="margin-top:auto;padding-top:10px"></div>
+    </div>
+
+    <!-- 메인 -->
+    <div class="panel main">
+        <div class="tabs" role="tablist">
+            <button class="active" data-tab="chat">에이전트 대화</button>
+            <button data-tab="impact">영향도 분석</button>
+            <button data-tab="db">DB 조회</button>
+            <button data-tab="explore">소스 · 배치</button>
+        </div>
+
+        <!-- 1. 대화 -->
+        <section class="tab-page active" id="tab-chat">
+            <div id="chat-box" aria-live="polite"></div>
+            <div class="row" style="justify-content:space-between;margin-bottom:6px">
+                <span class="muted">테이블.컬럼 이름을 넣어 질문하면 정확해집니다.</span>
+                <button class="ghost small" onclick="resetConversation()">새 대화</button>
+            </div>
+            <div class="input-area">
+                <input type="text" id="queryInput" aria-label="질문" placeholder="예: TB_CUST.CUST_NM 길이를 50으로 늘리면 어디서 에러가 나?"
+                       onkeydown="if(event.key === 'Enter' && !event.isComposing) sendQuery()">
+                <button id="sendBtn" onclick="sendQuery()" style="min-width:90px">전송</button>
+            </div>
+        </section>
+
+        <!-- 2. 영향도 분석 -->
+        <section class="tab-page" id="tab-impact">
+            <div class="scroll" style="flex:1">
+                <div class="form-grid">
+                    <label>테이블<input type="text" id="impTable" list="tableList" placeholder="TB_ORDER" onchange="loadColumnsFor(this.value)"></label>
+                    <label>컬럼<input type="text" id="impColumn" list="columnList" placeholder="STATUS"></label>
+                    <label>변경 종류<select id="impChange" onchange="renderImpactFields()"></select></label>
+                    <span id="impFields" style="display:contents"></span>
+                </div>
+                <div class="row" style="margin-top:12px;flex-wrap:wrap">
+                    <label class="muted row" style="gap:6px"><input type="checkbox" id="impDb"> DB 로 건수/분포 확인 (DB 연결 시)</label>
+                    <span class="grow"></span>
+                    <button onclick="runImpact(false)" id="impBtn">영향도 분석</button>
+                    <button onclick="runImpact(true)" id="impExplainBtn" class="ghost">분석 + 설명 보고서(LLM)</button>
+                </div>
+                <p id="impStatus" class="status-line"></p>
+                <div id="impResult"></div>
+            </div>
+            <datalist id="tableList"></datalist>
+            <datalist id="columnList"></datalist>
+        </section>
+
+        <!-- 3. DB 조회 -->
+        <section class="tab-page" id="tab-db">
+            <div class="split">
+                <div class="list-pane">
+                    <input type="text" id="tblFilter" placeholder="테이블 검색" oninput="renderTableList()">
+                    <div class="list-items" id="tblItems"></div>
+                </div>
+                <div class="detail-pane">
+                    <div id="tblDetail" class="muted">왼쪽에서 테이블을 고르면 컬럼과 사용하는 Pro*C 를 보여줍니다.</div>
+                    <h4>SQL 실행 <span class="muted">(SELECT / WITH 만, 읽기 전용 트랜잭션 · Ctrl+Enter)</span></h4>
+                    <textarea class="sql" id="sqlText" placeholder="SELECT * FROM TB_ORDER WHERE STATUS = '01'"
+                              onkeydown="if((event.ctrlKey||event.metaKey) && event.key==='Enter'){event.preventDefault();runSql();}"></textarea>
+                    <div class="row" style="margin:6px 0">
+                        <button onclick="runSql()" id="sqlBtn">실행</button>
+                        <label class="muted row" style="gap:6px">최대 행 <input type="number" id="sqlMax" value="200" min="1" max="5000" style="width:90px"></label>
+                        <span class="grow"></span>
+                        <span id="sqlStatus" class="status-line"></span>
+                    </div>
+                    <div id="sqlResult"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 4. 소스 · 배치 -->
+        <section class="tab-page" id="tab-explore">
+            <div class="split">
+                <div class="list-pane">
+                    <div class="seg" style="margin:8px">
+                        <button class="active" data-kind="programs" onclick="setExploreKind('programs', this)">프로그램</button>
+                        <button data-kind="batches" onclick="setExploreKind('batches', this)">배치</button>
+                    </div>
+                    <input type="text" id="expFilter" placeholder="검색" oninput="renderExploreList()">
+                    <div class="list-items" id="expItems"></div>
+                </div>
+                <div class="detail-pane" id="expDetail"><span class="muted">왼쪽에서 프로그램이나 배치 스크립트를 고르세요.</span></div>
+            </div>
+        </section>
+    </div>
+</div>
+
+<!-- 코드 보기 -->
+<div class="modal-back" id="codeModal" onclick="if(event.target===this) closeCode()">
+    <div class="modal">
+        <div class="modal-head">
+            <div><b id="codeTitle"></b> <span class="muted" id="codeSub"></span></div>
+            <div class="row"><button class="ghost small" onclick="moreCode(-40)">▲ 위로</button><button class="ghost small" onclick="moreCode(40)">▼ 아래로</button><button class="ghost small" onclick="closeCode()">닫기</button></div>
+        </div>
+        <div class="modal-body"><div class="code-lines" id="codeLines"></div></div>
+    </div>
+</div>
+
+<script>
+    // ---------- 공통 ----------
+    function esc(s) {
+        return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function inline(s) {
+        return s.replace(/`([^`]+)`/g, '<code class="inline">$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    }
+    function isTableSep(line) { return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line); }
+    function splitRow(line) {
+        return line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
+    }
+    const FENCE = /```[ \t]*([\w+-]*)[^\n]*\n([\s\S]*?)```/g;
+    function renderMarkdownText(text) {
+        const lines = text.split('\n');
+        let html = '', i = 0, para = [];
+        const flush = () => { if (para.length) { html += '<p>' + inline(esc(para.join('\n'))).replace(/\n/g, '<br>') + '</p>'; para = []; } };
+        while (i < lines.length) {
+            const line = lines[i]; let m;
+            if (!line.trim()) { flush(); i++; continue; }
+            if ((m = line.match(/^(#{1,4})\s+(.*)$/))) { flush(); html += `<h${m[1].length + 1}>${inline(esc(m[2]))}</h${m[1].length + 1}>`; i++; continue; }
+            if (line.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+                flush();
+                const head = splitRow(line); i += 2;
+                let t = '<table><thead><tr>' + head.map(c => `<th>${inline(esc(c))}</th>`).join('') + '</tr></thead><tbody>';
+                while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+                    t += '<tr>' + splitRow(lines[i]).map(c => `<td>${inline(esc(c))}</td>`).join('') + '</tr>'; i++;
+                }
+                html += t + '</tbody></table>'; continue;
+            }
+            if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
+                flush();
+                const ordered = /^\s*\d+[.)]/.test(line);
+                const itemRe = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/;
+                let items = '';
+                while (i < lines.length && itemRe.test(lines[i])) { items += '<li>' + inline(esc(lines[i].replace(/^\s*([-*+]|\d+[.)])\s+/, ''))) + '</li>'; i++; }
+                html += ordered ? `<ol>${items}</ol>` : `<ul>${items}</ul>`; continue;
+            }
+            para.push(line); i++;
+        }
+        flush();
+        return html;   // esc()를 거친 문자열만 들어간다
+    }
+    function renderMarkdown(text, container) {
+        let last = 0, m, html = '';
+        FENCE.lastIndex = 0;
+        while ((m = FENCE.exec(text)) !== null) {
+            if (m.index > last) html += renderMarkdownText(text.slice(last, m.index));
+            html += `<pre>${esc(m[2].replace(/\n$/, ''))}</pre>`;
+            last = FENCE.lastIndex;
+        }
+        if (last < text.length) html += renderMarkdownText(text.slice(last));
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        container.appendChild(div);
+    }
+    function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+    async function api(url, opts = {}) {
+        const res = await fetch(url, opts);
+        let data = null;
+        try { data = await res.json(); } catch { data = null; }
+        if (!res.ok) { const err = new Error((data && data.message) || `요청 실패 (${res.status})`); err.data = data; throw err; }
+        return data;
+    }
+    function postJson(url, body) { return api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+    function setStatus(id, text, kind) { const e = document.getElementById(id); e.textContent = text || ''; e.className = 'status-line' + (kind ? ' ' + kind : ''); }
+    function accBadge(a) { const k = a === '?' ? 'Q' : a; return `<span class="badge ${esc(k)}">${esc(a === '?' ? '동적?' : a)}</span>`; }
+    const SEV_KO = { ERROR: '에러 예상', WARN: '주의', INFO: '참고' };
+    let STATUS = null;
+
+    // ---------- 탭 ----------
+    document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+        document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
+        document.querySelectorAll('.tab-page').forEach(p => p.classList.toggle('active', p.id === 'tab-' + b.dataset.tab));
+        if (b.dataset.tab === 'db') loadTables();
+        if (b.dataset.tab === 'explore') loadExplore();
+    });
+    function gotoTab(name) { document.querySelector(`.tabs button[data-tab="${name}"]`).click(); }
+
+    // ---------- 상태 / 자산 ----------
+    async function loadStatus() {
+        try {
+            STATUS = await api('/api/status');
+        } catch (e) { document.getElementById('dbBox').textContent = '서버에 연결할 수 없습니다.'; return; }
+        const a = STATUS.assets;
+        const items = [['프로그램', a.programs], ['함수', a.functions], ['SQL', a.statements], ['테이블', a.tables], ['배치', a.scripts], ['실행 단계', a.batch_steps]];
+        document.getElementById('stats').innerHTML = items.map(([l, n]) => `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join('');
+        document.getElementById('statWarn').textContent = (a.warnings || []).slice(0, 3).join('\n');
+        const d = STATUS.db;
+        document.getElementById('dbBox').innerHTML = (d.configured
+            ? `<div><span class="dot"></span><b>${esc(d.user)}</b>@${esc(d.dsn)}</div>`
+            : `<div><span class="dot off"></span>접속 정보 없음 <span class="muted">(.env 설정)</span></div>`)
+            + `<div class="muted" style="margin-top:4px">메타데이터: ${d.snapshot_taken_at ? esc(d.snapshot_tables) + '개 테이블 · ' + esc(d.snapshot_taken_at) : '없음'}</div>`;
+        document.getElementById('refreshMetaBtn').disabled = !d.configured;
+        document.getElementById('llmInfo').textContent = `LLM: ${STATUS.llm.model} (${STATUS.llm.host})`;
+        const sel = document.getElementById('impChange');
+        if (!sel.options.length) {
+            sel.innerHTML = Object.entries(STATUS.change_types).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('');
+            renderImpactFields();
+        }
+        loadTableNames();
+    }
+    async function uploadAssets(kind) {
+        const input = document.getElementById(kind === 'source' ? 'srcFiles' : 'batchFiles');
+        if (!input.files.length) { setStatus('uploadStatus', '파일을 선택해 주세요.', 'err'); return; }
+        const fd = new FormData();
+        for (const f of input.files) fd.append('files', f);
+        setStatus('uploadStatus', '업로드 · 분석 중… (파일이 많으면 시간이 걸립니다)');
+        try {
+            const r = await api('/api/upload/' + kind, { method: 'POST', body: fd });
+            setStatus('uploadStatus', `${r.saved}개 저장` + (r.skipped_count ? `, ${r.skipped_count}개 건너뜀` : '') + (r.replaced.length ? `, ${r.replaced.length}개 교체` : ''), 'ok');
+            input.value = '';
+            loadStatus(); EXPLORE.loaded = false;
+        } catch (e) { setStatus('uploadStatus', e.message, 'err'); }
+    }
+    async function importFolder() {
+        const path = document.getElementById('folderPath').value.trim();
+        const kind = document.getElementById('folderKind').value;
+        if (!path) { setStatus('uploadStatus', '폴더 경로를 입력해 주세요.', 'err'); return; }
+        setStatus('uploadStatus', '가져오는 중…');
+        try {
+            const r = await postJson('/api/upload/folder', { path, kind });
+            setStatus('uploadStatus', `${r.saved}개 저장` + (r.skipped_count ? `, ${r.skipped_count}개 건너뜀` : ''), 'ok');
+            loadStatus(); EXPLORE.loaded = false;
+        } catch (e) { setStatus('uploadStatus', e.message, 'err'); }
+    }
+    async function clearAssets(kind) {
+        if (!confirm(kind === 'source' ? '등록된 소스를 모두 지울까요?' : '등록된 배치 스크립트를 모두 지울까요?')) return;
+        await api('/api/assets/' + kind, { method: 'DELETE' });
+        loadStatus(); EXPLORE.loaded = false;
+    }
+    async function checkDb() {
+        setStatus('dbStatus', '연결 확인 중…');
+        try {
+            const r = await api('/api/db/status');
+            setStatus('dbStatus', `연결됨: ${r.user} · ${r.db_name || ''} ${r.version || ''}`, 'ok');
+            document.querySelector('#dbBox .dot')?.classList.add('on');
+        } catch (e) { setStatus('dbStatus', e.message, 'err'); document.querySelector('#dbBox .dot')?.classList.add('off'); }
+    }
+    async function refreshMeta() {
+        setStatus('dbStatus', '메타데이터 읽는 중… (테이블이 많으면 1~2분)');
+        try {
+            const r = await api('/api/db/refresh', { method: 'POST' });
+            setStatus('dbStatus', `${r.tables}개 테이블 (스키마: ${r.owners.join(', ')})`, 'ok');
+            loadStatus(); TABLES = null;
+        } catch (e) { setStatus('dbStatus', e.message, 'err'); }
+    }
+
+    // ---------- 대화 ----------
+    let history = [], busy = false;
+    function scrollChat() { const b = document.getElementById('chat-box'); b.scrollTop = b.scrollHeight; }
+    function addBubble(sender, extra) {
+        const w = el('div', `msg-wrapper ${sender}`), m = el('div', `msg ${sender}` + (extra ? ' ' + extra : ''));
+        w.appendChild(m); document.getElementById('chat-box').appendChild(w); scrollChat();
+        return { w, m };
+    }
+    const EXAMPLES = [
+        'TB_CUST.CUST_NM 길이를 50으로 늘리면 어디서 에러가 나?',
+        "TB_ORDER.STATUS 값을 '01'에서 '05'로 바꾸면?",
+        'TB_CUST.GRADE 에 NULL 이 들어오면?',
+        'TB_ORDER 테이블을 쓰는 프로그램 알려줘',
+    ];
+    function welcome() {
+        const { m } = addBubble('bot');
+        m.append('안녕하세요! Pro*C 영향도 분석 에이전트입니다.');
+        const ul = el('ul');
+        ul.append(el('li', null, '테이블·컬럼·데이터를 바꿀 때 어떤 Pro*C 의 어떤 함수에서 에러가 날지 분석합니다.'),
+                  el('li', null, '"TB_ORDER 쓰는 프로그램", "ORD010 설명" 처럼 연관 관계도 물어볼 수 있습니다.'),
+                  el('li', null, '정확한 조건 지정은 [영향도 분석] 탭을 쓰세요.'));
+        m.appendChild(ul);
+        const ex = el('div', 'examples');
+        EXAMPLES.forEach(q => { const b = el('button', null, q); b.onclick = () => { document.getElementById('queryInput').value = q; sendQuery(); }; ex.appendChild(b); });
+        m.appendChild(ex);
+    }
+    function resetConversation() { history = []; document.getElementById('chat-box').replaceChildren(); welcome(); }
+    function setBusy(v) { busy = v; document.getElementById('sendBtn').disabled = v; document.getElementById('queryInput').disabled = v; }
+
+    async function sendQuery() {
+        if (busy) return;
+        const input = document.getElementById('queryInput');
+        const q = input.value.trim();
+        if (!q) return;
+        addBubble('user').m.textContent = q;
+        input.value = '';
+        const { m: wait } = addBubble('bot');
+        wait.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
+        setBusy(true);
+        const fd = new FormData();
+        fd.append('query', q);
+        fd.append('history', JSON.stringify(history));
+        try {
+            const r = await api('/api/chat', { method: 'POST', body: fd });
+            wait.replaceChildren();
+            const head = el('div');
+            head.innerHTML = `<span class="badge ${esc(r.status)}">${esc(r.status)}</span><span class="badge intent">${esc(r.intent)} · ${esc(r.decided_by)}</span>`;
+            wait.appendChild(head);
+            renderMarkdown(r.report || '', wait);
+            if (r.impact) wait.appendChild(impactNode(r.impact, true));
+            if (r.notes && r.notes.length) {
+                const n = el('div', 'notes'), ul = el('ul');
+                r.notes.forEach(x => ul.appendChild(el('li', null, x))); n.appendChild(ul); wait.appendChild(n);
+            }
+            if (r.evidence && r.evidence.length) {
+                const d = el('details', 'evidence'); d.appendChild(el('summary', null, `근거 ${r.evidence.length}건`));
+                const ul = el('ul'); r.evidence.forEach(e => ul.appendChild(el('li', null, e.source + (e.snippet ? ' — ' + e.snippet : ''))));
+                d.appendChild(ul);
+                if (r.search_query && r.search_query !== q) d.appendChild(el('div', null, '해석한 질문: ' + r.search_query));
+                wait.appendChild(d);
+            }
+            history.push({ question: q, answer: (r.report || '').slice(0, 1500) });
+            history = history.slice(-6);
+        } catch (e) {
+            wait.classList.add('error');
+            wait.textContent = e.message;
+        } finally { setBusy(false); scrollChat(); input.focus(); }
+    }
+
+    // ---------- 영향도 분석 ----------
+    const FIELD_DEFS = {
+        length: [['new_length', '새 길이', 'number']],
+        type: [['new_type', '새 타입', 'select', ['VARCHAR2', 'CHAR', 'NUMBER', 'DATE', 'TIMESTAMP']], ['new_precision', '정밀도/길이', 'number'], ['new_scale', '소수점 자리', 'number']],
+        nullable: [['nullable', '변경 후', 'select', [['true', 'NULL 허용'], ['false', 'NOT NULL']]]],
+        rename_column: [['new_name', '새 컬럼 이름', 'text']],
+        add_column: [['nullable', 'NULL 여부', 'select', [['true', 'NULL 허용'], ['false', 'NOT NULL']]], ['default', '기본값 있음', 'check']],
+        rename_table: [['new_name', '새 테이블 이름', 'text']],
+        data: [['operation', '데이터 변경', 'select', [['update', '값 수정'], ['delete', '행 삭제'], ['insert', '행 추가'], ['set_null', 'NULL 로 변경']]],
+               ['old_value', '바꾸기 전 값', 'text'], ['new_value', '바꾼 후 값', 'text'], ['condition', '대상 조건 (WHERE 뒤, 선택)', 'text']],
+    };
+    function renderImpactFields() {
+        const ch = document.getElementById('impChange').value;
+        const box = document.getElementById('impFields');
+        box.replaceChildren();
+        (FIELD_DEFS[ch] || []).forEach(([key, label, type, opts]) => {
+            const l = el('label', type === 'check' ? 'check' : null);
+            let input;
+            if (type === 'select') {
+                input = el('select');
+                opts.forEach(o => { const [v, t] = Array.isArray(o) ? o : [o, o]; const op = el('option', null, t); op.value = v; input.appendChild(op); });
+            } else {
+                input = el('input'); input.type = type === 'check' ? 'checkbox' : type;
+            }
+            input.dataset.key = key;
+            if (type === 'check') { l.append(input, document.createTextNode(label)); }
+            else { l.append(document.createTextNode(label), input); }
+            box.appendChild(l);
+        });
+        document.getElementById('impColumn').disabled = ['drop_table', 'rename_table'].includes(ch);
+    }
+    function impactBody() {
+        const body = { table: document.getElementById('impTable').value.trim(), change: document.getElementById('impChange').value,
+                       run_db_checks: document.getElementById('impDb').checked };
+        const col = document.getElementById('impColumn').value.trim();
+        if (col && !document.getElementById('impColumn').disabled) body.column = col;
+        document.querySelectorAll('#impFields [data-key]').forEach(i => {
+            const k = i.dataset.key;
+            if (i.type === 'checkbox') { body[k] = i.checked; return; }
+            const v = i.value.trim();
+            if (v === '') return;
+            if (k === 'nullable') body[k] = v === 'true';
+            else if (i.type === 'number') body[k] = parseInt(v, 10);
+            else body[k] = v;
+        });
+        return body;
+    }
+    async function runImpact(explain) {
+        const body = impactBody();
+        if (!body.table) { setStatus('impStatus', '테이블 이름을 입력해 주세요.', 'err'); return; }
+        const box = document.getElementById('impResult');
+        box.replaceChildren();
+        document.getElementById('impBtn').disabled = document.getElementById('impExplainBtn').disabled = true;
+        setStatus('impStatus', explain ? '분석하고 설명을 작성하는 중… (LLM 응답에 시간이 걸릴 수 있습니다)' : '분석 중…');
+        try {
+            const r = await postJson(explain ? '/api/impact/explain' : '/api/impact', body);
+            setStatus('impStatus', '');
+            if (r.report) {
+                const card = el('div', 'result-card');
+                card.innerHTML = `<h4>설명 보고서 <span class="badge intent">${esc(r.decided_by)}</span></h4>`;
+                renderMarkdown(r.report, card);
+                box.appendChild(card);
+            }
+            box.appendChild(impactNode(r, false));
+        } catch (e) { setStatus('impStatus', e.message, 'err'); }
+        finally { document.getElementById('impBtn').disabled = document.getElementById('impExplainBtn').disabled = false; }
+    }
+
+    function impactNode(r, compact) {
+        const root = el('div');
+        const s = r.summary;
+        const head = el('div', 'result-card');
+        const cm = r.column_meta;
+        head.innerHTML = `<h4>${esc(r.description)}</h4>`
+            + (cm ? `<div class="muted">현재: ${esc(cm.type)}${cm.length && cm.type !== 'NUMBER' && cm.type !== 'DATE' ? '(' + esc(cm.length) + ')' : ''}${cm.precision ? '(' + esc(cm.precision) + (cm.scale ? ',' + esc(cm.scale) : '') + ')' : ''} · ${cm.nullable ? 'NULL 허용' : 'NOT NULL'}${cm.comment ? ' · ' + esc(cm.comment) : ''}</div>` : '')
+            + `<div class="summary-chips"><div class="chip e"><b>${s.error}</b>에러 예상</div><div class="chip w"><b>${s.warn}</b>주의</div><div class="chip i"><b>${s.info}</b>참고</div>`
+            + `<div class="chip">영향 프로그램 <b style="font-size:.9rem">${esc(s.programs.join(', ') || '없음')}</b></div></div>`;
+        root.appendChild(head);
+
+        const fCard = el('div', 'result-card');
+        fCard.appendChild(el('h4', null, `영향 지점 (${r.findings.length})`));
+        if (!r.findings.length) fCard.appendChild(el('div', 'muted', '영향받는 SQL 을 찾지 못했습니다.'));
+        else {
+            const wrap = el('div', 'scroll'); wrap.style.maxHeight = compact ? '360px' : 'none';
+            const t = el('table');
+            t.innerHTML = '<thead><tr><th>심각도</th><th>예상</th><th>위치</th><th>내용</th><th>배치 순서 / 호출 경로</th></tr></thead>';
+            const tb = el('tbody');
+            r.findings.forEach(f => {
+                const tr = el('tr', 'clickable');
+                const batch = (f.batch || []).filter(b => b.order).map(b => `${b.script} #${b.order}`).join(', ');
+                const path = (f.call_paths && f.call_paths[0]) ? f.call_paths[0].join(' → ') : '';
+                tr.innerHTML = `<td><span class="badge ${esc(f.severity)}">${esc(SEV_KO[f.severity])}</span>${f.certain === false ? '<div class="path">확실도 낮음</div>' : ''}${f.existing ? '<div class="path">현재도 문제</div>' : ''}</td>`
+                    + `<td class="code">${esc(f.code)}</td>`
+                    + `<td><b>${esc(f.program)}</b>.${esc(f.function)}()<div class="path mono">${esc(f.file_name)}:${esc(f.line)} · ${esc(f.kind)}</div></td>`
+                    + `<td class="msg-cell"><b>${esc(f.title)}</b><div>${esc(f.message)}</div>${f.host ? `<div class="path mono">${esc(f.host)}</div>` : ''}</td>`
+                    + `<td><div>${esc(batch || '-')}</div><div class="path">${esc(path)}</div></td>`;
+                tr.title = f.sql;
+                tr.onclick = () => openCode(f.file_name, f.line, `${f.program}.${f.function}()`);
+                tb.appendChild(tr);
+            });
+            t.appendChild(tb); wrap.appendChild(t); fCard.appendChild(wrap);
+        }
+        root.appendChild(fCard);
+
+        if (r.downstream && r.downstream.length) {
+            const d = el('div', 'result-card');
+            d.appendChild(el('h4', null, '뒤 단계로 번지는 영향'));
+            const ul = el('ul');
+            r.downstream.forEach(x => {
+                const li = el('li');
+                li.innerHTML = `<b>${esc(x.from_program)}.${esc(x.from_function)}()</b> 가 <b>${esc(x.table)}</b> 에 씀 → `
+                    + x.readers.map(rd => `${esc(rd.program)}.${esc(rd.function)}${rd.after ? ' <span class="badge WARN">배치상 뒤</span>' : ''}`).join(', ');
+                ul.appendChild(li);
+            });
+            d.appendChild(ul); root.appendChild(d);
+        }
+        if (r.db_checks && r.db_checks.length) {
+            const d = el('div', 'result-card');
+            d.appendChild(el('h4', null, 'DB 로 확인해 볼 내용'));
+            r.db_checks.forEach(c => {
+                const box = el('div'); box.style.marginBottom = '10px';
+                box.appendChild(el('div', null, c.title));
+                box.appendChild(el('pre', null, c.sql));
+                const out = el('div');
+                if (c.result) out.appendChild(gridNode(c.result));
+                else if (c.error) out.appendChild(el('div', 'status-line err', c.error));
+                else {
+                    const b = el('button', 'ghost small', 'DB에서 실행');
+                    b.onclick = async () => {
+                        b.disabled = true;
+                        try { const res = await postJson('/api/db/query', { sql: c.sql, max_rows: 50 }); out.replaceChildren(gridNode(res)); }
+                        catch (e) { out.replaceChildren(el('div', 'status-line err', e.message)); }
+                    };
+                    out.appendChild(b);
+                }
+                box.appendChild(out); d.appendChild(box);
+            });
+            root.appendChild(d);
+        }
+        if (r.notes && r.notes.length && !compact) {
+            const n = el('div', 'notes'), ul = el('ul');
+            r.notes.forEach(x => ul.appendChild(el('li', null, x))); n.appendChild(ul); root.appendChild(n);
+        }
+        if (compact) {
+            const det = el('details'); det.appendChild(el('summary', 'muted', '규칙 분석 결과 상세'));
+            det.appendChild(root); det.open = r.findings.length > 0 && r.findings.length <= 8;
+            return det;
+        }
+        return root;
+    }
+
+    // ---------- 테이블 이름 / 컬럼 자동완성 ----------
+    let TABLES = null;
+    async function loadTableNames() {
+        try {
+            const r = await api('/api/tables');
+            TABLES = r.tables;
+            document.getElementById('tableList').innerHTML = TABLES.map(t => `<option value="${esc(t.name)}">${esc(t.comment || '')}</option>`).join('');
+        } catch { /* 무시 */ }
+    }
+    async function loadColumnsFor(name) {
+        if (!name) return;
+        try {
+            const r = await api('/api/tables/' + encodeURIComponent(name.trim()));
+            document.getElementById('columnList').innerHTML = r.columns.map(c => `<option value="${esc(c.name)}">${esc((c.type_text || '') + ' ' + (c.comment || ''))}</option>`).join('');
+        } catch { /* 무시 */ }
+    }
+
+    // ---------- DB 조회 ----------
+    let curTable = null;
+    async function loadTables() { if (!TABLES) await loadTableNames(); renderTableList(); }
+    function renderTableList() {
+        const f = document.getElementById('tblFilter').value.trim().toUpperCase();
+        const box = document.getElementById('tblItems');
+        const list = (TABLES || []).filter(t => !f || t.name.includes(f) || (t.comment || '').toUpperCase().includes(f)).slice(0, 500);
+        box.innerHTML = list.map(t => `<div class="item${t.name === curTable ? ' active' : ''}" data-name="${esc(t.name)}"><b>${esc(t.name)}</b> ${t.in_meta ? '' : '<span class="badge Q">메타 없음</span>'}`
+            + `<div class="sub">${esc(t.comment || '')} · 프로그램 ${t.programs} · R${t.reads}/W${t.writes}</div></div>`).join('') || '<div class="item muted">테이블이 없습니다. 소스를 등록하거나 메타데이터를 가져오세요.</div>';
+        box.querySelectorAll('.item[data-name]').forEach(d => d.onclick = () => showTable(d.dataset.name));
+    }
+    async function showTable(name) {
+        curTable = name; renderTableList();
+        const box = document.getElementById('tblDetail');
+        box.textContent = '불러오는 중…';
+        try {
+            const r = await api('/api/tables/' + encodeURIComponent(name));
+            const m = r.meta;
+            let html = `<h4 style="margin-top:0">${esc(r.name)} ${m ? `<span class="muted">${esc(m.owner)} · ${esc(m.comment || '')} · 약 ${esc(m.num_rows ?? '?')}행 · PK ${esc((m.pk || []).join(', ') || '없음')}</span>` : '<span class="muted">(메타데이터 없음)</span>'}</h4>`;
+            html += '<div class="row" style="margin-bottom:6px"><button class="ghost small" id="previewBtn">데이터 미리보기</button><button class="ghost small" id="toImpactBtn">이 테이블로 영향도 분석</button></div>';
+            html += '<div class="grid-wrap" style="max-height:30vh"><table><thead><tr><th>컬럼</th><th>타입</th><th>NULL</th><th>설명</th><th>사용하는 함수</th></tr></thead><tbody>'
+                + r.columns.map(c => `<tr class="clickable" data-col="${esc(c.name)}"><td class="mono">${esc(c.name)}</td><td class="mono">${esc(c.type_text)}</td><td>${c.not_in_meta ? '?' : (c.nullable ? 'Y' : 'N')}</td><td>${esc(c.comment || '')}</td><td class="path">${esc((c.used_by || []).slice(0, 6).join(', '))}${(c.used_by || []).length > 6 ? ' …' : ''}</td></tr>`).join('')
+                + '</tbody></table></div>';
+            const usage = r.usage.filter(u => u.kind !== 'cursor');
+            html += `<h4>사용하는 SQL (${usage.length})</h4><div class="grid-wrap" style="max-height:24vh"><table><thead><tr><th>프로그램</th><th>함수</th><th>줄</th><th>종류</th><th>R/W</th></tr></thead><tbody>`
+                + usage.map((u, i) => `<tr class="clickable" data-u="${i}"><td>${esc(u.program)}</td><td>${esc(u.function)}</td><td class="num">${esc(u.line)}</td><td>${esc(u.kind)}</td><td>${accBadge(u.access)}</td></tr>`).join('')
+                + '</tbody></table></div>';
+            box.innerHTML = html;
+            box.querySelectorAll('tr[data-u]').forEach(tr => tr.onclick = () => { const u = usage[+tr.dataset.u]; openProgramLine(u.program, u.line); });
+            box.querySelectorAll('tr[data-col]').forEach(tr => tr.onclick = () => {
+                document.getElementById('impTable').value = r.name; document.getElementById('impColumn').value = tr.dataset.col;
+                loadColumnsFor(r.name); gotoTab('impact');
+            });
+            document.getElementById('previewBtn').onclick = () => {
+                document.getElementById('sqlText').value = `SELECT * FROM ${r.name} WHERE ROWNUM <= 100`; runSql();
+            };
+            document.getElementById('toImpactBtn').onclick = () => { document.getElementById('impTable').value = r.name; loadColumnsFor(r.name); gotoTab('impact'); };
+        } catch (e) { box.textContent = e.message; }
+    }
+    async function runSql() {
+        const sql = document.getElementById('sqlText').value;
+        const max = parseInt(document.getElementById('sqlMax').value, 10) || 200;
+        const out = document.getElementById('sqlResult');
+        document.getElementById('sqlBtn').disabled = true;
+        setStatus('sqlStatus', '실행 중…');
+        const t0 = performance.now();
+        try {
+            const r = await postJson('/api/db/query', { sql, max_rows: max });
+            setStatus('sqlStatus', `${r.row_count}행${r.truncated ? ' (최대 행에서 잘림)' : ''} · ${Math.round(performance.now() - t0)}ms`, 'ok');
+            out.replaceChildren(gridNode(r));
+        } catch (e) { setStatus('sqlStatus', e.message, 'err'); out.replaceChildren(); }
+        finally { document.getElementById('sqlBtn').disabled = false; }
+    }
+    function gridNode(r) {
+        const wrap = el('div', 'grid-wrap');
+        const t = el('table');
+        t.innerHTML = '<thead><tr><th>#</th>' + r.columns.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>'
+            + r.rows.map((row, i) => `<tr><td class="num">${i + 1}</td>` + row.map(v => v === null ? '<td class="muted">(null)</td>' : `<td title="${esc(v)}">${esc(v)}</td>`).join('') + '</tr>').join('')
+            + '</tbody>';
+        wrap.appendChild(t);
+        return wrap;
+    }
+
+    // ---------- 소스 · 배치 ----------
+    const EXPLORE = { kind: 'programs', loaded: false, programs: [], batches: [], active: null };
+    async function loadExplore() {
+        if (EXPLORE.loaded) { renderExploreList(); return; }
+        try {
+            const [p, b] = await Promise.all([api('/api/programs'), api('/api/batches')]);
+            EXPLORE.programs = p.programs; EXPLORE.batches = b.scripts; EXPLORE.loaded = true;
+        } catch (e) { document.getElementById('expItems').textContent = e.message; return; }
+        renderExploreList();
+    }
+    function setExploreKind(kind, btn) {
+        EXPLORE.kind = kind;
+        document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('active', b === btn));
+        renderExploreList();
+    }
+    function renderExploreList() {
+        const f = document.getElementById('expFilter').value.trim().toLowerCase();
+        const box = document.getElementById('expItems');
+        if (EXPLORE.kind === 'programs') {
+            const list = EXPLORE.programs.filter(p => !f || p.program.toLowerCase().includes(f) || p.tables.some(t => t.name.toLowerCase().includes(f)));
+            box.innerHTML = list.map(p => `<div class="item" data-p="${esc(p.program)}"><b>${esc(p.program)}</b> ${p.has_main ? '' : '<span class="badge Q">라이브러리</span>'}`
+                + `<div class="sub">함수 ${p.functions} · SQL ${p.sql} · 테이블 ${p.tables.length}${p.batch.length ? ' · ' + esc(p.batch.map(b => b.script + ' #' + (b.order ?? '?')).join(', ')) : ''}</div></div>`).join('')
+                || '<div class="item muted">등록된 프로그램이 없습니다.</div>';
+            box.querySelectorAll('.item[data-p]').forEach(d => d.onclick = () => showProgram(d.dataset.p));
+        } else {
+            const list = EXPLORE.batches.filter(b => !f || b.name.toLowerCase().includes(f));
+            box.innerHTML = list.map(b => `<div class="item" data-b="${esc(b.name)}"><b>${esc(b.name)}</b> ${b.root ? '' : '<span class="badge Q">하위 스크립트</span>'}<div class="sub">Pro*C 실행 ${b.steps}단계 · ${b.lines}줄</div></div>`).join('')
+                || '<div class="item muted">등록된 배치 스크립트가 없습니다.</div>';
+            box.querySelectorAll('.item[data-b]').forEach(d => d.onclick = () => showBatch(d.dataset.b));
+        }
+    }
+    async function showProgram(name) {
+        const box = document.getElementById('expDetail');
+        box.textContent = '불러오는 중…';
+        try {
+            const r = await api('/api/programs/' + encodeURIComponent(name));
+            let html = `<h4 style="margin-top:0">${esc(r.program)} <span class="muted">${esc(r.file_name)} · ${r.lines}줄 · include: ${esc(r.includes.join(', ') || '-')}</span></h4>`;
+            if (r.batch.length) html += `<div class="muted">배치: ${esc(r.batch.map(b => `${b.script} ${b.order ?? '?'}번째 (${b.line}줄)`).join(', '))}</div>`;
+            r.functions.forEach((fn, fi) => {
+                html += `<div class="result-card"><div class="row"><b class="mono">${esc(fn.name)}()</b><span class="muted">${fn.line}~${fn.end_line}줄</span><span class="grow"></span><button class="ghost small" data-fn="${fi}">코드 보기</button></div>`
+                    + `<div class="path">호출: ${esc(fn.calls.join(', ') || '-')} · 호출됨: ${esc(fn.called_by.join(', ') || '-')}</div>`;
+                if (fn.statements.length) {
+                    html += '<table><thead><tr><th>줄</th><th>종류</th><th>테이블</th><th>SQL</th></tr></thead><tbody>'
+                        + fn.statements.map((s, si) => `<tr class="clickable" data-st="${fi}:${si}"><td class="num">${s.line}</td><td>${esc(s.kind)}${s.cursor ? ' ' + esc(s.cursor) : ''}${s.into_mismatch ? ' <span class="badge WARN">INTO 개수 불일치</span>' : ''}</td>`
+                            + `<td>${s.tables.map(t => esc(t.name) + ' ' + accBadge(t.access)).join('<br>')}${s.guessed_tables.map(t => esc(t) + ' ' + accBadge('?')).join('<br>')}</td><td class="mono path">${esc(s.sql.slice(0, 220))}</td></tr>`).join('')
+                        + '</tbody></table>';
+                }
+                html += '</div>';
+            });
+            box.innerHTML = html;
+            box.querySelectorAll('button[data-fn]').forEach(b => b.onclick = () => { const fn = r.functions[+b.dataset.fn]; openCode(r.file_name, fn.line, `${r.program}.${fn.name}()`, fn.line, fn.end_line); });
+            box.querySelectorAll('tr[data-st]').forEach(tr => tr.onclick = () => { const [fi, si] = tr.dataset.st.split(':').map(Number); openCode(r.file_name, r.functions[fi].statements[si].line, `${r.program}.${r.functions[fi].name}()`); });
+        } catch (e) { box.textContent = e.message; }
+    }
+    async function showBatch(name) {
+        const box = document.getElementById('expDetail');
+        box.textContent = '불러오는 중…';
+        try {
+            const r = await api('/api/batches/' + encodeURIComponent(name));
+            let html = `<h4 style="margin-top:0">${esc(r.name)} 실행 순서</h4><table><thead><tr><th>순서</th><th>스크립트:줄</th><th>실행</th><th>읽는 테이블</th><th>쓰는 테이블</th><th>실패 검사</th></tr></thead><tbody>`
+                + r.steps.map(s => `<tr${s.program ? ` class="clickable" data-prog="${esc(s.program)}"` : ''}><td class="num">${esc(s.order ?? '')}</td><td class="mono path">${esc((s.via || []).concat([s.script]).join(' › '))}:${esc(s.line)}</td>`
+                    + `<td>${s.program ? '<b>' + esc(s.program) + '</b>' : '<span class="muted">' + esc(s.kind === 'script' ? '스크립트 없음: ' + (s.missing_script || '') : s.command) + '</span>'}<div class="path mono">${esc(s.text || '')}</div></td>`
+                    + `<td class="path">${esc((s.reads || []).join(', '))}</td><td class="path">${esc((s.writes || []).join(', '))}</td><td>${s.checks_exit ? '✔' : '<span class="muted">-</span>'}</td></tr>`).join('')
+                + '</tbody></table>';
+            html += `<details><summary class="muted" style="cursor:pointer">스크립트 원문</summary><pre>${esc(r.text)}</pre></details>`;
+            box.innerHTML = html;
+            box.querySelectorAll('tr[data-prog]').forEach(tr => tr.onclick = () => { setExploreKind('programs', document.querySelector('.seg button[data-kind="programs"]')); showProgram(tr.dataset.prog); });
+        } catch (e) { box.textContent = e.message; }
+    }
+
+    // ---------- 코드 보기 ----------
+    const CODE = { file: null, start: 1, end: 1, hl: 0, hlEnd: 0, total: 0 };
+    async function openProgramLine(program, line) {
+        const p = (EXPLORE.programs.length ? EXPLORE.programs : (await api('/api/programs')).programs).find(x => x.program === program);
+        if (p) openCode(p.file_name, line, program);
+    }
+    function openCode(file, line, title, hlStart, hlEnd) {
+        CODE.file = file; CODE.hl = hlStart || line; CODE.hlEnd = hlEnd || line;
+        CODE.start = Math.max(1, (hlStart || line) - 15); CODE.end = (hlEnd || line) + 30;
+        document.getElementById('codeTitle').textContent = title || file;
+        document.getElementById('codeSub').textContent = `${file}:${line}`;
+        document.getElementById('codeModal').classList.add('open');
+        loadCode(true);
+    }
+    async function loadCode(scrollToHl) {
+        const box = document.getElementById('codeLines');
+        try {
+            const r = await api(`/api/source/${encodeURIComponent(CODE.file)}?start=${CODE.start}&end=${CODE.end}`);
+            CODE.total = r.total; CODE.end = r.end;
+            let inSql = false;
+            box.innerHTML = r.lines.map((t, i) => {
+                const n = r.start + i;
+                if (/EXEC\s+SQL/i.test(t)) inSql = true;
+                const cls = (n >= CODE.hl && n <= CODE.hlEnd ? 'hl ' : '') + (inSql ? 'sql' : '');
+                const html = `<div class="${cls}" ${n === CODE.hl ? 'id="hlLine"' : ''}><span class="ln">${n}</span>${esc(t)}</div>`;
+                if (inSql && /;\s*$|END-EXEC/i.test(t)) inSql = false;
+                return html;
+            }).join('');
+            if (scrollToHl) document.getElementById('hlLine')?.scrollIntoView({ block: 'center' });
+        } catch (e) { box.textContent = e.message; }
+    }
+    function moreCode(n) {
+        if (n < 0) CODE.start = Math.max(1, CODE.start + n); else CODE.end = Math.min(CODE.total || CODE.end + n, CODE.end + n);
+        loadCode(false);
+    }
+    function closeCode() { document.getElementById('codeModal').classList.remove('open'); }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCode(); });
+
+    loadStatus();
+    welcome();
+</script>
+</body>
+</html>

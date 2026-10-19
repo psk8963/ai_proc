@@ -1,0 +1,69 @@
+/* ORD020 : 확정 주문 집계 (K&R 스타일 함수 포함) */
+#include <stdio.h>
+#include "common.h"
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+    CUST_REC st_cust;
+    char     h_cust_id[11];
+    char     h_grade_nm[11];
+    VARCHAR  v_remark[30];
+    long     h_tot_amt;
+    char     h_sql[500];
+EXEC SQL END DECLARE SECTION;
+
+static int load_customer(cust_id)
+char *cust_id;
+{
+    strcpy(h_cust_id, cust_id);
+
+    EXEC SQL SELECT CUST_ID, CUST_NM, GRADE, CREDIT_AMT
+               INTO :st_cust
+               FROM TB_CUST
+              WHERE CUST_ID = :h_cust_id;
+
+    if (sqlca.sqlcode == SQL_NOT_FOUND) {
+        return 0;
+    }
+
+    EXEC SQL SELECT DECODE(GRADE, 'A', '우수', 'B', '일반', '기타'),
+                    REMARK
+               INTO :h_grade_nm, :v_remark
+               FROM TB_CUST
+              WHERE CUST_ID = :h_cust_id;
+    return 1;
+}
+
+int sum_confirmed()
+{
+    EXEC SQL SELECT SUM(AMT)
+               INTO :h_tot_amt
+               FROM TB_ORDER
+              WHERE STATUS = '02'
+                AND CUST_ID = :h_cust_id;
+
+    EXEC SQL INSERT INTO TB_CUST_SUM
+             SELECT CUST_ID, SUM(AMT), SYSDATE
+               FROM TB_ORDER
+              WHERE STATUS IN ('02', '03')
+              GROUP BY CUST_ID;
+    return 0;
+}
+
+int rebuild_stat()
+{
+    sprintf(h_sql, "DELETE FROM TB_ORDER_STAT WHERE STAT_DT = '%s'", "20260101");
+    EXEC SQL PREPARE s1 FROM :h_sql;
+    EXEC SQL EXECUTE s1;
+    return 0;
+}
+
+int main()
+{
+    EXEC SQL WHENEVER NOT FOUND CONTINUE;
+    load_customer("C001");
+    sum_confirmed();
+    rebuild_stat();
+    return 0;
+}
