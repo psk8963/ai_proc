@@ -53,6 +53,10 @@ class ImpactRequest(BaseModel):
     run_db_checks: bool = False
 
 
+class SettingsRequest(BaseModel):
+    values: Dict[str, Optional[str]]
+
+
 class SqlRequest(BaseModel):
     sql: str
     max_rows: Optional[int] = None

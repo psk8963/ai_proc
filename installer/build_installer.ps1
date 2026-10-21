@@ -46,15 +46,19 @@ $Site = Join-Path $PyDir "Lib\site-packages"
 New-Item -ItemType Directory -Force -Path $Site | Out-Null
 Invoke-Expression "$Py -m pip install --no-index --find-links wheels -r requirements.txt --target `"$Site`" --no-compile --disable-pip-version-check"
 if ($LASTEXITCODE -ne 0) { throw "패키지 설치 실패" }
+# 데스크톱 앱용(트레이 아이콘) 패키지: wheels 에 없으면 인터넷에서 받는다
+Invoke-Expression "$Py -m pip install --find-links wheels -r requirements-app.txt --target `"$Site`" --no-compile --disable-pip-version-check"
+if ($LASTEXITCODE -ne 0) { throw "앱 패키지(pystray, pillow) 설치 실패" }
 
 # ---------- 3) 앱 파일 ----------
 $AppDir = Join-Path $Dist "app"
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
 $Files = @("app.py", "agent_runtime.py", "batch_parser.py", "config.py", "db_runtime.py", "impact_engine.py",
            "proc_parser.py", "prompts.py", "schemas.py", "source_repository.py", "sql_analyzer.py",
-           "launcher.py", "version.py", "README.md", ".env.example")
+           "launcher.py", "desktop.py", "settings_store.py", "version.py", "README.md", ".env.example")
 foreach ($f in $Files) { Copy-Item $f -Destination $AppDir }
 Copy-Item "static" -Destination $AppDir -Recurse
+Copy-Item "assets" -Destination $AppDir -Recurse
 New-Item -ItemType Directory -Force -Path (Join-Path $AppDir "samples") | Out-Null
 Copy-Item "tests\samples\*" -Destination (Join-Path $AppDir "samples") -Recurse
 
@@ -63,7 +67,7 @@ $Smoke = Join-Path $Build "smoke-data"
 if (Test-Path $Smoke) { Remove-Item $Smoke -Recurse -Force }
 $env:PROC_AGENT_DATA_DIR = $Smoke
 $env:PROC_AGENT_NO_DOTENV = "1"
-& (Join-Path $PyDir "python.exe") -c "import app, oracledb, launcher, version; print('smoke ok', version.__version__, oracledb.__version__)"
+& (Join-Path $PyDir "python.exe") -c "import app, oracledb, launcher, desktop, settings_store, version, pystray, PIL; print('smoke ok', version.__version__, oracledb.__version__)"
 if ($LASTEXITCODE -ne 0) { throw "묶은 Python 으로 앱을 불러오지 못했습니다" }
 Remove-Item Env:PROC_AGENT_DATA_DIR, Env:PROC_AGENT_NO_DOTENV
 Remove-Item $Smoke -Recurse -Force -ErrorAction SilentlyContinue

@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import uuid
 from typing import List, Optional
 
@@ -14,7 +15,8 @@ from config import BASE_DIR, DATA_DIR, MAX_UPLOAD_BYTES
 from version import __version__
 from db_runtime import DbError, SchemaMeta, column_type_text
 from impact_engine import CHANGE_TYPES, DATA_OPS, ScenarioError, analyze_impact_live
-from schemas import ChatResponse, ErrorEnvelope, Evidence, FolderImportRequest, ImpactRequest, SqlRequest
+import settings_store
+from schemas import ChatResponse, ErrorEnvelope, Evidence, FolderImportRequest, ImpactRequest, SettingsRequest, SqlRequest
 from source_repository import (
     AssetError,
     clear_assets,
@@ -92,6 +94,7 @@ def status():
     return {
         "version": __version__,
         "data_dir": str(DATA_DIR),
+        "desktop": bool(getattr(app.state, "desktop", None)),
         "assets": idx.stats(),
         "db": {"configured": config.db_configured(), "dsn": config.ORACLE_DSN, "user": config.ORACLE_USER,
                "snapshot_taken_at": snap.get("taken_at"), "snapshot_tables": len(snap.get("tables") or {}),
@@ -100,6 +103,43 @@ def status():
         "change_types": CHANGE_TYPES,
         "data_ops": DATA_OPS,
     }
+
+
+# ---------- 설정 · 앱 제어 ----------
+
+@app.get("/api/settings")
+def get_settings():
+    return settings_store.read_settings()
+
+
+@app.put("/api/settings")
+def put_settings(req: SettingsRequest):
+    trace_id = _new_trace()
+    try:
+        r = settings_store.write_settings(req.values)
+    except ValueError as e:
+        return error_response(400, "INVALID_SETTING", str(e), trace_id)
+    logger.info("trace_id=%s settings changed=%s", trace_id, r["changed"])
+    return dict(r, trace_id=trace_id)
+
+
+def _desktop_action(name: str):
+    trace_id = _new_trace()
+    ctl = getattr(app.state, "desktop", None)
+    if not ctl:
+        return error_response(409, "NOT_DESKTOP", "앱(설치판)으로 실행할 때만 쓸 수 있습니다. 개발 모드에서는 터미널에서 서버를 다시 시작하세요.", trace_id)
+    threading.Timer(0.5, ctl[name]).start()
+    return {"ok": True, "action": name, "trace_id": trace_id}
+
+
+@app.post("/api/app/restart")
+def app_restart():
+    return _desktop_action("restart")
+
+
+@app.post("/api/app/quit")
+def app_quit():
+    return _desktop_action("quit")
 
 
 # ---------- 자산 업로드 ----------

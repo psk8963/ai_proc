@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pro*C 영향도 분석 에이전트</title>
+    <link rel="icon" type="image/png" href="favicon.png">
     <style>
         :root {
             --primary-color: #2563eb;
@@ -45,7 +46,7 @@
         button.small { padding: 4px 9px; font-size: 0.76rem; }
         button.danger { background: transparent; color: var(--err); border: 1px solid #fecaca; }
         button.danger:hover { background: #fef2f2; }
-        input[type="text"], input[type="number"], select, textarea {
+        input[type="text"], input[type="number"], input[type="password"], select, textarea {
             padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 0.88rem; outline: none;
             font-family: inherit; background: #fff; min-width: 0;
         }
@@ -57,6 +58,13 @@
         .status-line { font-size: 0.8rem; margin: 6px 0 0; min-height: 1em; white-space: pre-wrap; }
         .status-line.ok { color: var(--ok); } .status-line.err { color: var(--err); }
 
+        .app-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+        .app-head img { border-radius: 7px; }
+        .settings-form { display: grid; grid-template-columns: 1fr; gap: 10px; padding: 16px; overflow: auto; }
+        .settings-form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--text-muted); font-weight: 600; }
+        .settings-form .grp { margin-top: 6px; font-weight: 700; color: var(--text-main); border-bottom: 1px solid var(--border-color); padding-bottom: 4px; }
+        .overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.85); display: none; z-index: 60; align-items: center; justify-content: center; font-weight: 600; }
+        .overlay.open { display: flex; }
         .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 6px 0; }
         .stat { background: #f8fafc; border: 1px solid var(--border-color); border-radius: 8px; padding: 6px 8px; }
         .stat .n { font-weight: 700; font-size: 1rem; }
@@ -179,6 +187,11 @@
 <div class="container">
     <!-- 사이드바: 자산 등록 / 현황 / DB -->
     <div class="panel sidebar">
+        <div class="app-head">
+            <img src="favicon.png" alt="" width="28" height="28">
+            <div class="grow"><b>Pro*C 영향도 분석</b><div class="muted" id="appVer"></div></div>
+            <button class="ghost small" onclick="openSettings()" title="DB 접속 · LLM · 포트 설정">⚙ 설정</button>
+        </div>
         <h3>분석 자산 등록</h3>
         <div class="muted">① Pro*C 소스 (.pc .c .h, zip 가능)</div>
         <input type="file" id="srcFiles" multiple accept=".pc,.pcc,.c,.cpp,.h,.hpp,.zip">
@@ -305,6 +318,27 @@
     </div>
 </div>
 
+<!-- 설정 -->
+<div class="modal-back" id="settingsModal" onclick="if(event.target===this) closeSettings()">
+    <div class="modal" style="width:min(640px,100%)">
+        <div class="modal-head">
+            <div style="min-width:0;overflow-wrap:anywhere"><b>설정</b> <span class="muted" id="settingsPath"></span></div>
+            <button class="ghost small" onclick="closeSettings()" style="white-space:nowrap">닫기</button>
+        </div>
+        <div id="settingsWelcome" class="notes" style="margin:12px 16px 0;display:none">
+            처음 실행입니다. DB 접속 정보를 넣고 저장한 뒤 <b>다시 시작</b>을 누르세요. DB 없이도 Pro*C 소스 분석은 바로 쓸 수 있습니다.
+        </div>
+        <div class="settings-form" id="settingsForm"></div>
+        <div class="row" style="padding:0 16px 16px;flex-wrap:wrap">
+            <span id="settingsStatus" class="status-line grow"></span>
+            <button class="ghost" id="quitBtn" onclick="appControl('quit')" style="display:none">앱 종료</button>
+            <button class="ghost" id="restartBtn" onclick="appControl('restart')" style="display:none">다시 시작</button>
+            <button onclick="saveSettings()">저장</button>
+        </div>
+    </div>
+</div>
+<div class="overlay" id="overlay"><span id="overlayText">다시 시작하는 중…</span></div>
+
 <!-- 코드 보기 -->
 <div class="modal-back" id="codeModal" onclick="if(event.target===this) closeCode()">
     <div class="modal">
@@ -408,7 +442,7 @@
         const d = STATUS.db;
         document.getElementById('dbBox').innerHTML = (d.configured
             ? `<div><span class="dot"></span><b>${esc(d.user)}</b>@${esc(d.dsn)}</div>`
-            : `<div><span class="dot off"></span>접속 정보 없음 <span class="muted">(.env 설정)</span></div>`)
+            : `<div><span class="dot off"></span>접속 정보 없음 <span class="muted">(⚙ 설정에서 입력)</span></div>`)
             + `<div class="muted" style="margin-top:4px">메타데이터: ${d.snapshot_taken_at ? esc(d.snapshot_tables) + '개 테이블 · ' + esc(d.snapshot_taken_at) : '없음'}</div>`;
         document.getElementById('refreshMetaBtn').disabled = !d.configured;
         document.getElementById('llmInfo').textContent = `v${STATUS.version} · LLM: ${STATUS.llm.model} (${STATUS.llm.host}) · 데이터: ${STATUS.data_dir}`;
@@ -983,9 +1017,58 @@
         loadCode(false);
     }
     function closeCode() { document.getElementById('codeModal').classList.remove('open'); }
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCode(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeCode(); closeSettings(); } });
 
-    loadStatus();
+    // ---------- 설정 ----------
+    let SETTINGS = null;
+    async function openSettings(welcomeMode) {
+        document.getElementById('settingsModal').classList.add('open');
+        document.getElementById('settingsWelcome').style.display = welcomeMode ? '' : 'none';
+        setStatus('settingsStatus', '');
+        try {
+            SETTINGS = await api('/api/settings');
+            document.getElementById('settingsPath').textContent = SETTINGS.path;
+            let html = '', grp = '';
+            SETTINGS.fields.forEach(f => {
+                if (f.group !== grp) { grp = f.group; html += `<div class="grp">${esc(grp)}</div>`; }
+                const v = SETTINGS.values[f.key] || '';
+                const ph = f.secret ? (SETTINGS.has_secret[f.key] ? '저장된 비밀번호 유지 (바꿀 때만 입력)' : '') : '';
+                html += `<label>${esc(f.label)}<input type="${f.secret ? 'password' : 'text'}" data-key="${esc(f.key)}" value="${esc(v)}" placeholder="${esc(ph)}" autocomplete="off"></label>`;
+            });
+            document.getElementById('settingsForm').innerHTML = html;
+            document.getElementById('restartBtn').style.display = document.getElementById('quitBtn').style.display = SETTINGS.desktop ? '' : 'none';
+        } catch (e) { setStatus('settingsStatus', e.message, 'err'); }
+    }
+    function closeSettings() { document.getElementById('settingsModal').classList.remove('open'); }
+    async function saveSettings() {
+        const values = {};
+        document.querySelectorAll('#settingsForm input[data-key]').forEach(i => values[i.dataset.key] = i.value);
+        try {
+            const r = await api('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values }) });
+            if (!r.changed.length) { setStatus('settingsStatus', '바뀐 값이 없습니다.'); return; }
+            setStatus('settingsStatus', SETTINGS && SETTINGS.desktop ? '저장했습니다. [다시 시작]을 누르면 적용됩니다.' : '저장했습니다. 서버를 다시 시작하면 적용됩니다.', 'ok');
+        } catch (e) { setStatus('settingsStatus', e.message, 'err'); }
+    }
+    async function appControl(action) {
+        if (action === 'quit' && !confirm('앱을 종료할까요? (창을 닫는 것과 달리 백그라운드 서버까지 끝납니다)')) return;
+        try { await api('/api/app/' + action, { method: 'POST' }); } catch (e) { setStatus('settingsStatus', e.message, 'err'); return; }
+        const ov = document.getElementById('overlay');
+        document.getElementById('overlayText').textContent = action === 'quit' ? '앱을 종료했습니다. 이 창을 닫아 주세요.' : '다시 시작하는 중…';
+        ov.classList.add('open');
+        if (action !== 'restart') return;
+        let wentDown = false;
+        for (let i = 0; i < 60; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            try { await fetch('/api/status', { cache: 'no-store' }).then(r => { if (!r.ok) throw 0; }); if (wentDown || i > 3) { location.href = '/ui/'; return; } }
+            catch { wentDown = true; }
+        }
+        document.getElementById('overlayText').textContent = '다시 시작하지 못했습니다. 트레이 아이콘이나 시작 메뉴에서 앱을 실행해 주세요.';
+    }
+
+    loadStatus().then(() => {
+        if (STATUS) document.getElementById('appVer').textContent = 'v' + STATUS.version + (STATUS.desktop ? ' · 앱' : '');
+        if (new URLSearchParams(location.search).get('welcome')) openSettings(true);
+    });
     welcome();
 </script>
 </body>

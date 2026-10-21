@@ -112,3 +112,13 @@ def test_ui_served():
     r = client.get("/ui/")
     assert r.status_code == 200 and "Pro*C" in r.text
     assert json.loads(client.get("/api/batches").content)["scripts"]
+
+
+def test_settings_api_and_app_control(tmp_path, monkeypatch):
+    import settings_store
+    monkeypatch.setattr(settings_store.config, "DATA_DIR", tmp_path)
+    r = client.put("/api/settings", json={"values": {"ORACLE_USER": "app"}})
+    assert r.status_code == 200 and r.json()["changed"] == ["ORACLE_USER"]
+    assert client.get("/api/settings").json()["values"]["ORACLE_USER"] == "app"
+    r = client.post("/api/app/restart")
+    assert r.status_code == 409 and r.json()["code"] == "NOT_DESKTOP"     # 개발 모드

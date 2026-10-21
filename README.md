@@ -17,13 +17,17 @@
 
 [Releases](https://github.com/psk8963/ai_proc/releases) 에서 `ProcImpactAgent-Setup-<버전>.exe` 를 받아 실행합니다.
 
-- **관리자 권한 없이** 사용자 폴더(`%LOCALAPPDATA%\Programs\ProcImpactAgent`)에 설치됩니다. Python 설치도 필요 없습니다(포함).
-- 시작 메뉴 **Pro*C 영향도 분석 에이전트** 를 누르면 서버 창이 뜨고 브라우저로 화면이 열립니다. 서버 창을 닫으면 종료됩니다.
-- 처음 실행하면 메모장으로 설정 파일(`.env`)이 열립니다. DB 접속 정보를 넣고 저장한 뒤 다시 실행하세요.
-  시작 메뉴의 **설정 파일 열기 (.env)** 로 언제든 고칠 수 있습니다.
-- 등록한 소스·분석 캐시·설정은 `%LOCALAPPDATA%\ProcImpactAgent` 에 저장되어 **새 버전을 덮어 설치해도 그대로** 남습니다.
-- Oracle 11g 서버라면 Instant Client 19(64bit)를 따로 풀어 두고 `.env` 의 `ORACLE_CLIENT_LIB_DIR` 에 경로를 넣습니다(4-2 참고).
-- 샘플 소스는 설치 폴더의 `app\samples` 에 있습니다.
+- **관리자 권한 없이** 사용자 폴더(`%LOCALAPPDATA%\Programs\ProcImpactAgent`)에 설치됩니다. Python 도 포함되어 있습니다.
+- 시작 메뉴/바탕화면의 **ProC 영향도 분석 에이전트** 를 누르면 Ollama·Claude 앱처럼 **전용 앱 창**이 열립니다
+  (주소창·탭 없는 창, Windows 에 기본으로 있는 Edge 엔진 사용). 콘솔 창은 뜨지 않습니다.
+- 작업 표시줄 오른쪽 **트레이 아이콘**: 열기 · 설정 파일 · 데이터 폴더 · 로그 보기 · 다시 시작 · 종료.
+  앱 창을 닫아도 트레이에 남아 있고(분석 캐시 유지), 트레이에서 **종료**해야 완전히 끝납니다.
+- 처음 실행하면 **설정** 창이 열립니다. DB 접속 정보를 넣고 저장 → **다시 시작**. 이후에는 화면 왼쪽 위 **⚙ 설정**에서 바꿉니다.
+- 설치할 때 "Windows 시작할 때 트레이에서 자동 실행"을 고르면 로그인 시 트레이로 조용히 시작됩니다.
+- 등록한 소스·분석 캐시·설정·로그는 `%LOCALAPPDATA%\ProcImpactAgent` 에 있어 **새 버전을 덮어 설치해도 그대로** 남습니다.
+  새 버전 설치 시 실행 중인 앱은 자동으로 종료됩니다.
+- Oracle 11g 서버라면 Instant Client 19(64bit)를 따로 풀어 두고 설정의 "Instant Client 19 폴더"에 경로를 넣습니다(4-2 참고).
+- 문제가 생기면 시작 메뉴의 **문제 해결 (콘솔 모드)** 로 실행하면 서버 로그를 바로 볼 수 있습니다.
 
 ### 새 버전 릴리스하기 (개발자)
 
@@ -219,7 +223,11 @@ HOST_LONG_BITS=64               # Pro*C 가 도는 서버의 C long 크기 (64bi
 | `tests/` | 자동 테스트 · 샘플 소스/배치/스냅샷 (`tests/samples`) |
 | `source_repository/`, `analysis_index/` | 실행 중 생성 (git 제외) |
 | `make_wheels.bat` | `wheels` 폴더 만들기 |
-| `launcher.py` | 설치판 실행기 (서버 시작 + 브라우저 열기) |
+| `desktop.py` | 데스크톱 앱 실행기 (전용 창 + 트레이, 콘솔 없음) |
+| `launcher.py` | 콘솔 모드 실행기 (문제 해결용) |
+| `settings_store.py` | 앱 안 설정 화면 ↔ `.env` |
+| `assets/` | 앱 아이콘 |
+| `requirements-app.txt` | 설치판 전용 패키지 (트레이 아이콘) |
 | `version.py` | 앱 버전 (릴리스 태그와 같아야 함) |
 | `installer/` | 설치 프로그램 빌드 스크립트 (Inno Setup) |
 | `.github/workflows/release.yml` | 태그 push 시 설치 프로그램 빌드 · 릴리스 |
