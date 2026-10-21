@@ -19,7 +19,7 @@ def test_status_counts_samples():
     r = client.get("/api/status")
     assert r.status_code == 200
     a = r.json()["assets"]
-    assert a["programs"] == 2 and a["headers"] == 1 and a["scripts"] == 2
+    assert a["programs"] == 3 and a["headers"] == 1 and a["scripts"] == 2
     assert r.json()["db"]["configured"] is False
 
 

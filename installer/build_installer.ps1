@@ -54,7 +54,7 @@ if ($LASTEXITCODE -ne 0) { throw "앱 패키지(pystray, pillow) 설치 실패" 
 $AppDir = Join-Path $Dist "app"
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
 $Files = @("app.py", "agent_runtime.py", "batch_parser.py", "config.py", "db_runtime.py", "impact_engine.py",
-           "proc_parser.py", "prompts.py", "schemas.py", "source_repository.py", "sql_analyzer.py",
+           "proc_parser.py", "prompts.py", "schemas.py", "source_repository.py", "sql_analyzer.py", "dynamic_sql.py",
            "launcher.py", "desktop.py", "settings_store.py", "version.py", "README.md", ".env.example")
 foreach ($f in $Files) { Copy-Item $f -Destination $AppDir }
 Copy-Item "static" -Destination $AppDir -Recurse

@@ -1,0 +1,78 @@
+/* ORD030 : 조건에 따라 SQL 을 조립하는 동적 SQL 예제 */
+#include <stdio.h>
+#include <string.h>
+#include "common.h"
+
+EXEC SQL INCLUDE sqlca;
+
+#define SQL_DEL_TMP "DELETE FROM TB_ORDER_TMP " \
+                    "WHERE WORK_DT < :1"
+
+EXEC SQL BEGIN DECLARE SECTION;
+    VARCHAR v_sql[2000];
+    char    h_where[500];
+    char    h_ord_no[13];
+    char    h_cust_nm[21];
+    char    h_status[3];
+    char    h_work_dt[9];
+    char    h_tab[31];
+EXEC SQL END DECLARE SECTION;
+
+int search_orders(char *status, int with_cust)
+{
+    strcpy(h_where, " WHERE O.STATUS = :1");
+    if (with_cust) {
+        strcat(h_where, " AND C.GRADE = 'A'");
+    }
+
+    sprintf((char *)v_sql.arr,
+            "SELECT O.ORD_NO, C.CUST_NM "
+            "  FROM TB_ORDER O, TB_CUST C %s"
+            "   AND O.CUST_ID = C.CUST_ID", h_where);
+    v_sql.len = strlen((char *)v_sql.arr);
+
+    EXEC SQL PREPARE s_ord FROM :v_sql;
+    EXEC SQL DECLARE c_dyn CURSOR FOR s_ord;
+    strcpy(h_status, status);
+    EXEC SQL OPEN c_dyn USING :h_status;
+    for (;;) {
+        EXEC SQL FETCH c_dyn INTO :h_ord_no, :h_cust_nm;
+        if (sqlca.sqlcode == 1403) break;
+    }
+    EXEC SQL CLOSE c_dyn;
+    return 0;
+}
+
+int update_status(char *ord_no)
+{
+    char sql[300];
+    strcpy(sql, "UPDATE TB_ORDER SET STATUS = :1, UPD_DT = SYSDATE ");
+    strcat(sql, "WHERE ORD_NO = :2");
+    EXEC SQL PREPARE s_upd FROM :sql;
+    EXEC SQL EXECUTE s_upd USING :h_status, :h_ord_no;
+    return 0;
+}
+
+int clean_tmp()
+{
+    strcpy((char *)v_sql.arr, SQL_DEL_TMP);
+    v_sql.len = strlen((char *)v_sql.arr);
+    EXEC SQL EXECUTE IMMEDIATE :v_sql;
+    return 0;
+}
+
+int copy_table(char *tab)
+{
+    sprintf((char *)v_sql.arr, "INSERT INTO %s SELECT * FROM TB_ORDER", tab);
+    EXEC SQL EXECUTE IMMEDIATE :v_sql;
+    return 0;
+}
+
+int main()
+{
+    search_orders("01", 1);
+    update_status("A001");
+    clean_tmp();
+    copy_table("TB_ORDER_BAK");
+    return 0;
+}

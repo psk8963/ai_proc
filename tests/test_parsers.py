@@ -91,7 +91,7 @@ def test_comments_and_semicolon_in_string():
 
 def test_sample_index_links_cursor_struct_and_headers():
     idx = get_index()
-    assert set(idx.programs) == {"ORD010", "ORD020"}
+    assert set(idx.programs) == {"ORD010", "ORD020", "ORD030"}
     fetch = next(s for s in idx.statements.values() if s["program"] == "ORD010" and s["kind"] == "fetch")
     outs = {b["column"]: b for b in fetch["bindings"] if b["direction"] == "out"}
     assert outs["CUST_NM"]["hv"]["capacity"] == 20          # LEN_CUST_NM(헤더) + 1
@@ -126,3 +126,19 @@ def test_cp949_crlf_source():
     r = parse_proc_source(decode_source(src.encode("cp949")), "k.pc")
     st = next(s for s in r["statements"] if s["kind"] == "select")
     assert st["function"] == "f" and st["line"] == 4 and st["literals"][0]["values"] == ["가"]
+
+
+def test_dynamic_sql_reconstruct_unit():
+    from dynamic_sql import reconstruct
+    text = """
+        char w[100];
+        strcpy(w, " WHERE A = :1");
+        if (x) strcat(w, " AND B = 'Y'");
+        sprintf(buf, "SELECT C1, C2 FROM %s%s", "TB_X", w);
+        sprintf(buf + strlen(buf), " ORDER BY %d", n);
+    """
+    r = reconstruct(text, ":buf", {})
+    assert r["sql"] == "SELECT C1, C2 FROM TB_X WHERE A = :p1 AND B = 'Y' ORDER BY 0" and not r["partial"]
+    r2 = reconstruct('sprintf(q, "DELETE FROM %s", tab);', "q", {})
+    assert r2["partial"] and "__V_TAB__" in r2["sql"]
+    assert reconstruct("strcpy(other, \"x\");", "buf", {}) is None

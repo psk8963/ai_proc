@@ -182,10 +182,13 @@ class _Collector:
         self.keys.add(key)
         if not certain and severity == "ERROR":
             severity = "WARN"
+        if st.get("dynamic_sql"):
+            message += " (동적 SQL 을 C 코드에서 재구성해 분석" + (", 일부 값은 실행 시 결정" if st.get("dynamic_partial") else "") + ")"
         self.items.append({
             "severity": severity, "code": code, "title": title, "message": message,
             "program": st["program"], "file_name": st["file_name"], "function": st["function"],
-            "line": st["line"], "stmt": st["key"], "kind": st["kind"], "sql": _snippet(st.get("sql", "")),
+            "line": st["line"], "stmt": st["key"], "kind": st["kind"] + ("(동적)" if st.get("dynamic_sql") else ""),
+            "sql": _snippet(st.get("dynamic_sql") or st.get("sql", "")), "dynamic": bool(st.get("dynamic_sql")),
             "host": _host_text(binding) if binding else None, "existing": existing, "certain": certain,
         })
 

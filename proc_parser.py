@@ -13,12 +13,14 @@
 from __future__ import annotations
 
 import bisect
+import copy
 import re
 from typing import Dict, List, Optional, Tuple
 
-from sql_analyzer import analyze_sql
+from dynamic_sql import is_placeholder, reconstruct
+from sql_analyzer import analyze_sql, tokenize
 
-PARSER_VERSION = "1"
+PARSER_VERSION = "2"
 
 C_KEYWORDS = {
     "if", "else", "for", "while", "do", "switch", "case", "default", "return", "sizeof", "goto", "break",
@@ -403,7 +405,8 @@ def parse_proc_source(src: str, file_name: str, context: Optional[Dict] = None) 
     stripped = strip_comments(src)
     lines = _Lines(src)
 
-    own_defines = {m.group(1): m.group(2) for m in _DEFINE_RE.finditer(stripped)}
+    joined = re.sub(r"\\\r?\n", " ", stripped)   # 여러 줄 #define (줄 끝 \) 합치기
+    own_defines = {m.group(1): m.group(2) for m in _DEFINE_RE.finditer(joined)}
     defines = dict(context.get("defines") or {})
     defines.update(own_defines)
     includes = [m.group(1).replace("\\", "/").split("/")[-1] for m in _INCLUDE_RE.finditer(stripped)]
@@ -502,10 +505,13 @@ def parse_proc_source(src: str, file_name: str, context: Optional[Dict] = None) 
         if info["kind"] == "cursor" and info.get("cursor"):
             cursors[info["cursor"]] = stmt
         if info.get("dynamic") and fn:
+            stmt["_func_text"] = stripped[fn["_start"]:s]
             stmt["guessed_tables"] = guess_dynamic_tables(stripped[fn["_start"]:fn["_end"]])
         statements.append(stmt)
         if fn:
             fn["statements"].append(stmt["id"])
+
+    link_dynamic_sql(statements, defines)
 
     # 커서 연결: OPEN / FETCH 문에 커서의 테이블·컬럼 정보를 붙인다
     for st in statements:
@@ -517,7 +523,15 @@ def parse_proc_source(src: str, file_name: str, context: Optional[Dict] = None) 
                 st["columns"] = cur["columns"] if st["kind"] == "open" else []
             if st["kind"] == "open":
                 st["literals"] = cur["literals"]
-                st["bindings"] = [b for b in cur["bindings"] if b["direction"] == "filter"]
+                st["bindings"] = [dict(b) for b in cur["bindings"] if b["direction"] == "filter"]
+                if st.get("open_using") and cur.get("dynamic_sql"):
+                    _apply_dynamic(st, {"kind": "select", "bindings": st["bindings"]},
+                                   {"sql": cur["dynamic_sql"], "partial": cur.get("dynamic_partial", False)},
+                                   st["open_using"])
+                    st["tables"], st["columns"] = cur["tables"], cur["columns"]
+            if cur.get("dynamic_sql") and st["kind"] in ("open", "fetch"):
+                st["dynamic_sql"] = cur["dynamic_sql"]
+                st["dynamic_partial"] = cur.get("dynamic_partial", False)
             if st["kind"] == "fetch":
                 st["select_items"] = cur.get("select_items")
                 st["select_star"] = cur.get("select_star", False)
@@ -540,6 +554,102 @@ def parse_proc_source(src: str, file_name: str, context: Optional[Dict] = None) 
         "statements": statements,
         "has_main": any(f["name"] == "main" for f in functions),
     }
+
+
+# ---------- 동적 SQL ----------
+
+_DYN_FIELDS = ("tables", "columns", "bindings", "literals", "lineage", "select_items", "select_star",
+               "insert_columns", "insert_no_columns", "insert_values", "insert_select", "insert_select_items")
+
+
+def _using_hosts(sql: str) -> List[Dict]:
+    m = re.search(r"\bUSING\b(.*)$", sql, re.I | re.S)
+    if not m:
+        return []
+    return [{"host": t.value, "indicator": t.indicator} for t in tokenize(m.group(1)) if t.kind == "host"]
+
+
+def _clean_dynamic(dyn: Dict) -> Dict:
+    """자리표시(__V_..__)로 남은 테이블·컬럼은 버린다."""
+    dyn = dict(dyn)
+    dyn["tables"] = [t for t in dyn.get("tables") or [] if not is_placeholder(t["name"])]
+    keep = lambda e: not is_placeholder(e.get("column")) and not is_placeholder(e.get("table"))  # noqa: E731
+    for k in ("columns", "bindings", "literals"):
+        dyn[k] = [e for e in dyn.get(k) or [] if keep(e)]
+        for e in dyn[k]:
+            e["candidates"] = [c for c in e.get("candidates") or [] if not is_placeholder(c)]
+    return dyn
+
+
+def _apply_dynamic(st: Dict, dyn: Dict, rec: Dict, using: List[Dict]):
+    for k in _DYN_FIELDS:
+        if k in dyn:
+            st[k] = dyn[k]
+    # 자리표시(:p1, :v_id ...)를 USING 의 호스트 변수로 순서대로 바꾼다
+    if using:
+        order = []
+        for t in tokenize(rec["sql"]):
+            if t.kind == "host" and t.value not in order:
+                order.append(t.value)
+        mapping = {ph: using[i] for i, ph in enumerate(order) if i < len(using)}
+        for b in st.get("bindings") or []:
+            u = mapping.get(b["host"])
+            if u:
+                b["host"], b["indicator"] = u["host"], u["indicator"] or b.get("indicator", "")
+    st["dynamic_sql"] = rec["sql"][:2000]
+    st["dynamic_partial"] = rec["partial"]
+    st["dynamic_kind"] = dyn["kind"]
+    st.pop("guessed_tables", None)
+
+
+def link_dynamic_sql(statements: List[Dict], defines: Dict[str, str]):
+    """PREPARE / EXECUTE IMMEDIATE 의 버퍼를 C 코드에서 재구성해 EXECUTE · 커서 문장에 붙인다."""
+    prepared: Dict[str, Tuple[Dict, Dict]] = {}
+    for st in statements:
+        func_text = st.pop("_func_text", None)
+        if func_text is None:
+            continue
+        m = re.match(r"\s*PREPARE\s+(\w+)\s+FROM\s+:\s*([\w.]+)", st["sql"], re.I)
+        mi = re.match(r"\s*EXECUTE\s+IMMEDIATE\s+:\s*([\w.]+)", st["sql"], re.I)
+        buf = m.group(2) if m else (mi.group(1) if mi else None)
+        if not buf:
+            continue
+        rec = reconstruct(func_text, buf, defines)
+        if not rec:
+            continue
+        dyn = _clean_dynamic(analyze_sql(rec["sql"]))
+        if dyn["kind"] not in ("select", "insert", "update", "delete", "merge", "plsql"):
+            st["dynamic_sql"] = rec["sql"][:2000]
+            continue
+        if m:
+            prepared[m.group(1).upper()] = (dyn, rec)
+            st["dynamic_sql"] = rec["sql"][:2000]
+            st["dynamic_partial"] = rec["partial"]
+            st.pop("guessed_tables", None)
+        else:
+            _apply_dynamic(st, dyn, rec, [])
+            st["kind"] = dyn["kind"] if dyn["kind"] != "select" else "execute_immediate"
+    if not prepared:
+        return
+    for st in statements:
+        sql = st["sql"]
+        me = re.match(r"\s*EXECUTE\s+(\w+)\b", sql, re.I)
+        mc = re.match(r"\s*DECLARE\s+(\w+)\s+CURSOR\s+FOR\s+(\w+)\s*$", sql, re.I)
+        if me and me.group(1).upper() in prepared and me.group(1).upper() not in ("IMMEDIATE", "BEGIN", "DECLARE"):
+            dyn, rec = prepared[me.group(1).upper()]
+            _apply_dynamic(st, copy.deepcopy(dyn), rec, _using_hosts(sql))
+            if dyn["kind"] != "select":
+                st["kind"] = dyn["kind"]
+        elif mc and mc.group(2).upper() in prepared:
+            dyn, rec = prepared[mc.group(2).upper()]
+            if dyn["kind"] == "select":
+                _apply_dynamic(st, copy.deepcopy(dyn), rec, [])
+                st["dynamic"] = True
+    # OPEN c USING :a, :b → 커서 조건의 자리표시를 실제 호스트 변수로
+    cursors = {st.get("cursor"): st for st in statements if st["kind"] == "cursor" and st.get("dynamic_sql")}
+    for st in statements:
+        if st["kind"] == "open" and st.get("cursor") in cursors:
+            st["open_using"] = _using_hosts(st["sql"])
 
 
 def _own_names(text: str) -> set:

@@ -23,7 +23,7 @@ def test_length_increase_finds_truncation_and_host_flow():
     assert ("ORD010", "confirm_order", "ORA-12899", "WARN") in c
     f = next(x for x in r["findings"] if x["function"] == "fetch_orders")
     assert f["batch"][0]["order"] == 1 and f["call_paths"][0] == ["main", "fetch_orders"]
-    assert r["summary"]["programs"] == ["ORD010", "ORD020"]       # 배치 순서
+    assert r["summary"]["programs"] == ["ORD010", "ORD020", "ORD030"]   # 배치 순서 (ORD030 은 배치에 없음 → 마지막)
 
 
 def test_length_within_capacity_is_quiet():
@@ -59,9 +59,17 @@ def test_drop_column_and_add_column():
     assert ("ORD020", "sum_confirmed", "ORA-00947", "ERROR") in _codes(r)
 
 
-def test_drop_table_dynamic_sql_warning():
+def test_dynamic_sql_reconstructed():
+    # ORD020.rebuild_stat: sprintf 로 만든 DELETE 문 → 재구성해서 테이블 삭제 영향을 잡는다
     r = _run(table="TB_ORDER_STAT", change="drop_table")
-    assert r["findings"] and all(f["code"] == "동적 SQL" for f in r["findings"])
+    f = [x for x in r["findings"] if x["code"] == "ORA-00942"]
+    assert f and f[0]["function"] == "rebuild_stat" and f[0]["dynamic"] and "DELETE FROM TB_ORDER_STAT" in f[0]["sql"]
+    # ORD030: 조건을 strcat 으로 붙인 커서 → FETCH 받는 변수까지 연결
+    r = _run(table="TB_CUST", column="CUST_NM", change="nullable", nullable=True)
+    assert any(x["program"] == "ORD030" and x["kind"] == "fetch(동적)" and x["code"] == "ORA-01405" for x in r["findings"])
+    # EXECUTE s USING :h_status → 자리표시가 실제 호스트 변수로 연결되어 길이 검사
+    r = _run(table="TB_ORDER", column="STATUS", change="length", new_length=1)
+    assert any(x["program"] == "ORD030" and x["function"] == "update_status" and x["code"] == "ORA-12899" for x in r["findings"])
 
 
 def test_downstream_reader_after_in_batch():

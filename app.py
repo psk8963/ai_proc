@@ -249,6 +249,7 @@ def _stmt_view(st):
     return {"line": st["line"], "end_line": st["end_line"], "kind": st["kind"], "cursor": st.get("cursor") or "",
             "tables": st.get("tables") or [], "sql": st.get("sql", "")[:1500], "dynamic": st.get("dynamic", False),
             "guessed_tables": st.get("guessed_tables") or [],
+            "dynamic_sql": (st.get("dynamic_sql") or "")[:3000], "dynamic_partial": bool(st.get("dynamic_partial")),
             "bindings": [{"column": b.get("column"), "table": b.get("table"), "host": b.get("host"),
                           "indicator": b.get("indicator"), "direction": b.get("direction"),
                           "host_decl": b.get("hv")} for b in st.get("bindings") or []],

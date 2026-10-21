@@ -171,7 +171,21 @@
         .code-lines div { white-space: pre; padding: 0 14px 0 0; }
         .code-lines .ln { display: inline-block; width: 58px; color: #64748b; text-align: right; padding-right: 12px; user-select: none; }
         .code-lines .hl { background: #854d0e55; }
-        .code-lines .sql { color: #93c5fd; }
+        .code-lines .sql { color: #cbd5e1; }
+        .hk-kw { color: #60a5fa; font-weight: 700; }
+        .hk-str { color: #86efac; }
+        .hk-cm { color: #64748b; font-style: italic; }
+        .hk-host { color: #f0abfc; }
+        .hk-t { color: #22d3ee; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+        .hk-tf { background: #facc15; color: #111827; font-weight: 700; border-radius: 3px; padding: 0 2px; }
+        .hk-col { background: #fb923c; color: #111827; font-weight: 700; border-radius: 3px; padding: 0 2px; }
+        .legend { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--border-color); font-size: 0.78rem; align-items: center; }
+        .legend .chip { padding: 2px 8px; border-radius: 6px; font-family: var(--mono); font-weight: 700; border: 0; }
+        .legend .lg-tf { background: #facc15; } .legend .lg-col { background: #fb923c; }
+        .legend .lg-t { background: #cffafe; color: #0e7490; } .legend .lg-kw { background: #dbeafe; color: #1d4ed8; }
+        .dbobj { cursor: pointer; padding: 6px 8px; border-radius: 8px; list-style: none; margin-left: -8px; }
+        .dbobj:hover { background: #eff6ff; }
+        .dbobj .open-hint { color: var(--primary-color); font-size: 0.75rem; margin-left: 6px; }
 
         @media (max-width: 1000px) {
             body { padding: 12px; }
@@ -344,8 +358,9 @@
     <div class="modal">
         <div class="modal-head">
             <div><b id="codeTitle"></b> <span class="muted" id="codeSub"></span></div>
-            <div class="row"><button class="ghost small" onclick="moreCode(-40)">▲ 위로</button><button class="ghost small" onclick="moreCode(40)">▼ 아래로</button><button class="ghost small" onclick="closeCode()">닫기</button></div>
+            <div class="row"><span id="codeMore"><button class="ghost small" onclick="moreCode(-40)">▲ 위로</button><button class="ghost small" onclick="moreCode(40)">▼ 아래로</button></span><button class="ghost small" id="codeNextHit" onclick="nextHit()" style="display:none">다음 사용 위치 ▼</button><button class="ghost small" onclick="closeCode()">닫기</button></div>
         </div>
+        <div class="legend" id="codeLegend" style="display:none"></div>
         <div class="modal-body"><div class="code-lines" id="codeLines"></div></div>
     </div>
 </div>
@@ -665,7 +680,8 @@
                     + `<td class="msg-cell"><b>${esc(f.title)}</b><div>${esc(f.message)}</div>${f.host ? `<div class="path mono">${esc(f.host)}</div>` : ''}</td>`
                     + `<td><div>${esc(batch || '-')}</div><div class="path">${esc(path)}</div></td>`;
                 tr.title = f.sql;
-                tr.onclick = () => openCode(f.file_name, f.line, `${f.program}.${f.function}()`);
+                tr.onclick = () => openCode(f.file_name, f.line, `${f.program}.${f.function}()`, null, null,
+                                            { focusTables: [r.scenario.table], columns: r.scenario.column ? [r.scenario.column] : [] });
                 tb.appendChild(tr);
             });
             t.appendChild(tb); wrap.appendChild(t); fCard.appendChild(wrap);
@@ -689,10 +705,15 @@
             d.appendChild(el('h4', null, `DB 안의 사용처 — 프로시저·패키지·트리거·뷰 (${r.db_objects.length})`));
             const ul = el('ul');
             r.db_objects.forEach(o => {
-                const li = el('li');
+                const li = el('li', 'dbobj');
+                const terms = { focusTables: [r.scenario.table], columns: r.scenario.column ? [r.scenario.column] : [] };
+                const st = { inComment: false };
                 li.innerHTML = `<b class="mono">${esc(o.owner)}.${esc(o.name)}</b> <span class="badge Q">${esc(TYPE_KO[o.type] || o.type)}</span>`
                     + (o.uses_column ? ' <span class="badge WARN">컬럼 사용</span>' : '')
-                    + (o.lines && o.lines.length ? '<div class="path mono">' + o.lines.slice(0, 3).map(l => `${esc(l.line)}: ${esc(l.text.trim())}`).join('<br>') + '</div>' : '');
+                    + '<span class="open-hint">소스 보기 ›</span>'
+                    + (o.lines && o.lines.length ? '<div class="path mono">' + o.lines.slice(0, 3).map(l => `${esc(l.line)}: ${hlLine(l.text.trim(), terms, st, true)}`).join('<br>') + '</div>' : '');
+                li.title = '클릭하면 소스를 엽니다';
+                li.onclick = () => openDbSource(o.owner, o.name, o.type, { table: r.scenario.table, column: r.scenario.column, lines: o.lines || [] });
                 ul.appendChild(li);
             });
             d.appendChild(ul); root.appendChild(d);
@@ -839,10 +860,13 @@
         if (t === 'NUMBER') return c.precision == null ? 'NUMBER' : (c.scale ? `NUMBER(${c.precision},${c.scale})` : `NUMBER(${c.precision})`);
         return t;
     }
-    function sourceBox(text, startLine) {
+    function sourceBox(text, startLine, terms) {
         const lines = (text || '').replace(/\n$/, '').split('\n');
-        return `<div class="grid-wrap" style="max-height:55vh;background:#0f172a"><div class="code-lines">`
-            + lines.map((l, i) => `<div><span class="ln">${(startLine || 1) + i}</span>${esc(l)}</div>`).join('') + '</div></div>';
+        const st = { inComment: false };
+        terms = terms || {};
+        return (terms.tables && terms.tables.length ? `<div class="legend" style="padding:6px 0;border:0">${legendHtml(terms)}</div>` : '')
+            + `<div class="grid-wrap" style="max-height:55vh;background:#0f172a"><div class="code-lines">`
+            + lines.map((l, i) => `<div><span class="ln">${(startLine || 1) + i}</span>${hlLine(l, terms, st, true)}</div>`).join('') + '</div></div>';
     }
     function objLink(o) { return `<a href="#" class="objlink" data-o="${esc(o.owner)}" data-n="${esc(o.name)}" data-t="${esc(o.type)}">${esc(o.owner)}.${esc(o.name)}</a> <span class="badge Q">${esc(TYPE_KO[o.type] || o.type)}</span>`; }
     async function showObject(owner, name, type) {
@@ -872,7 +896,7 @@
             if (d.references) html += `<h4>참조하는 오브젝트 (${d.references.length})</h4>` + (d.references.length ? '<ul>' + d.references.map(o => `<li>${objLink(o)}</li>`).join('') + '</ul>' : '<div class="muted">없음</div>');
             if (d.sequence) html += '<ul>' + Object.entries(d.sequence).map(([k, v]) => `<li>${esc(k)}: <b>${esc(v)}</b></li>`).join('') + '</ul>';
             if (d.synonym) html += `<div>→ ${objLink({ owner: d.synonym.table_owner, name: d.synonym.table_name, type: 'TABLE' })}${d.synonym.db_link ? ' @' + esc(d.synonym.db_link) : ''}</div>`;
-            if (d.source != null) html += `<h4>소스${d.lines ? ` (${d.lines}줄)` : ''}</h4>` + sourceBox(d.source);
+            if (d.source != null) html += `<h4>소스${d.lines ? ` (${d.lines}줄)` : ''}</h4>` + sourceBox(d.source, 1, { tables: (d.references || []).filter(o => ['TABLE', 'VIEW', 'SYNONYM', 'MATERIALIZED VIEW'].includes(o.type)).map(o => o.name) });
             box.innerHTML = html;
             box.querySelectorAll('a.objlink').forEach(a => a.onclick = (e) => { e.preventDefault(); showObject(a.dataset.o, a.dataset.n, a.dataset.t); });
             if (t) {
@@ -955,7 +979,7 @@
                 if (fn.statements.length) {
                     html += '<table><thead><tr><th>줄</th><th>종류</th><th>테이블</th><th>SQL</th></tr></thead><tbody>'
                         + fn.statements.map((s, si) => `<tr class="clickable" data-st="${fi}:${si}"><td class="num">${s.line}</td><td>${esc(s.kind)}${s.cursor ? ' ' + esc(s.cursor) : ''}${s.into_mismatch ? ' <span class="badge WARN">INTO 개수 불일치</span>' : ''}</td>`
-                            + `<td>${s.tables.map(t => esc(t.name) + ' ' + accBadge(t.access)).join('<br>')}${s.guessed_tables.map(t => esc(t) + ' ' + accBadge('?')).join('<br>')}</td><td class="mono path">${esc(s.sql.slice(0, 220))}</td></tr>`).join('')
+                            + `<td>${s.tables.map(t => esc(t.name) + ' ' + accBadge(t.access)).join('<br>')}${s.guessed_tables.map(t => esc(t) + ' ' + accBadge('?')).join('<br>')}</td><td class="mono path">${s.dynamic_sql ? `<span class="badge INFO" title="C 코드에서 조립한 문장">동적 SQL 재구성${s.dynamic_partial ? ' (일부 실행 시 결정)' : ''}</span><br>` + hlLine(s.dynamic_sql.slice(0, 400), { tables: s.tables.map(t => t.name) }, { inComment: false }, true) : hlLine(s.sql.slice(0, 220), { tables: s.tables.map(t => t.name) }, { inComment: false }, true)}</td></tr>`).join('')
                         + '</tbody></table>';
                 }
                 html += '</div>';
@@ -981,19 +1005,115 @@
         } catch (e) { box.textContent = e.message; }
     }
 
-    // ---------- 코드 보기 ----------
-    const CODE = { file: null, start: 1, end: 1, hl: 0, hlEnd: 0, total: 0 };
-    async function openProgramLine(program, line) {
-        const p = (EXPLORE.programs.length ? EXPLORE.programs : (await api('/api/programs')).programs).find(x => x.program === program);
-        if (p) openCode(p.file_name, line, program);
+    // ---------- 코드 보기 (색상 강조) ----------
+    const SQL_KW = new Set(('SELECT FROM WHERE AND OR NOT IN IS NULL INSERT INTO VALUES UPDATE SET DELETE MERGE USING MATCHED THEN WHEN ELSE ELSIF END IF LOOP FOR WHILE EXIT ' +
+        'BEGIN DECLARE EXCEPTION OTHERS RETURN RETURNING CURSOR OPEN FETCH CLOSE COMMIT ROLLBACK PROCEDURE FUNCTION PACKAGE BODY IS AS CREATE REPLACE ' +
+        'TRIGGER BEFORE AFTER EACH ROW ON JOIN LEFT RIGHT OUTER INNER GROUP BY ORDER HAVING UNION ALL DISTINCT EXISTS BETWEEN LIKE CASE DECODE NVL ' +
+        'SYSDATE ROWNUM EXEC SQL PREPARE EXECUTE IMMEDIATE WHENEVER SQLERROR FOUND INCLUDE TYPE ROWTYPE RAISE NEW OLD OF WITH BULK COLLECT FORALL ' +
+        'INDICATOR VARCHAR VARCHAR2 NUMBER DATE CHAR TRUNCATE TABLE LOCK').split(' '));
+    const TOK_RE = /(\/\*|\*\/|--.*$|\/\/.*$|'(?:[^']|'')*'?|"(?:[^"\\]|\\.)*"?|:[A-Za-z_][\w.]*|[A-Za-z_][\w$#]*|\s+|.)/g;
+    // terms: { focusTables:[], columns:[], tables:[] }  state: { inComment }  forceKw: PL/SQL 처럼 소문자 키워드도 칠할지
+    function hlLine(text, terms, state, forceKw) {
+        const ft = new Set((terms.focusTables || []).map(x => x.toUpperCase()));
+        const fc = new Set((terms.columns || []).filter(Boolean).map(x => x.toUpperCase()));
+        const tt = new Set((terms.tables || []).map(x => x.toUpperCase()));
+        let out = '', m;
+        TOK_RE.lastIndex = 0;
+        while ((m = TOK_RE.exec(text)) !== null) {
+            const t = m[0];
+            if (!t) { TOK_RE.lastIndex++; continue; }
+            if (state.inComment) {
+                out += `<span class="hk-cm">${esc(t)}</span>`;
+                if (t === '*/') state.inComment = false;
+                continue;
+            }
+            if (t === '/*') { state.inComment = true; out += `<span class="hk-cm">${esc(t)}</span>`; continue; }
+            if (t.startsWith('--') && !forceKw) { out += '--'; TOK_RE.lastIndex = m.index + 2; continue; }  // C 의 감소 연산자
+            if (t.startsWith('--') || t.startsWith('//')) { out += `<span class="hk-cm">${esc(t)}</span>`; continue; }
+            if (t[0] === "'" || t[0] === '"') { out += `<span class="hk-str">${esc(t)}</span>`; continue; }
+            if (t[0] === ':' && t.length > 1) { out += `<span class="hk-host">${esc(t)}</span>`; continue; }
+            if (/^[A-Za-z_]/.test(t)) {
+                const u = t.toUpperCase();
+                if (ft.has(u)) out += `<span class="hk-tf">${esc(t)}</span>`;
+                else if (fc.has(u)) out += `<span class="hk-col">${esc(t)}</span>`;
+                else if (tt.has(u)) out += `<span class="hk-t">${esc(t)}</span>`;
+                else if (SQL_KW.has(u) && (forceKw || t === u)) out += `<span class="hk-kw">${esc(t)}</span>`;
+                else out += esc(t);
+                continue;
+            }
+            out += esc(t);
+        }
+        return out;
     }
-    function openCode(file, line, title, hlStart, hlEnd) {
-        CODE.file = file; CODE.hl = hlStart || line; CODE.hlEnd = hlEnd || line;
+    function legendHtml(terms, extra) {
+        let h = '<span class="muted">표시:</span>';
+        (terms.focusTables || []).filter(Boolean).forEach(t => h += `<span class="chip lg-tf" title="분석 대상 테이블">${esc(t)}</span>`);
+        (terms.columns || []).filter(Boolean).forEach(c => h += `<span class="chip lg-col" title="분석 대상 컬럼">${esc(c)}</span>`);
+        (terms.tables || []).filter(t => !(terms.focusTables || []).includes(t)).slice(0, 20).forEach(t => h += `<span class="chip lg-t" title="사용하는 테이블">${esc(t)}</span>`);
+        h += '<span class="chip lg-kw">SQL 키워드</span>' + (extra || '');
+        return h;
+    }
+
+    const CODE = { mode: 'proc', file: null, start: 1, end: 1, hl: 0, hlEnd: 0, total: 0, terms: {}, hits: [], hitIdx: 0, lines: null };
+    async function openProgramLine(program, line, terms) {
+        const p = (EXPLORE.programs.length ? EXPLORE.programs : (await api('/api/programs')).programs).find(x => x.program === program);
+        if (p) openCode(p.file_name, line, program, null, null, terms);
+    }
+    function programTables(file) {
+        const p = (EXPLORE.programs || []).find(x => x.file_name === file);
+        return p ? p.tables.map(t => t.name) : [];
+    }
+    async function openCode(file, line, title, hlStart, hlEnd, terms) {
+        if (!EXPLORE.programs.length) { try { EXPLORE.programs = (await api('/api/programs')).programs; } catch { /* 무시 */ } }
+        CODE.mode = 'proc'; CODE.file = file; CODE.hl = hlStart || line; CODE.hlEnd = hlEnd || line; CODE.hits = [];
         CODE.start = Math.max(1, (hlStart || line) - 15); CODE.end = (hlEnd || line) + 30;
+        CODE.terms = Object.assign({ tables: programTables(file) }, terms || {});
         document.getElementById('codeTitle').textContent = title || file;
         document.getElementById('codeSub').textContent = `${file}:${line}`;
+        document.getElementById('codeMore').style.display = '';
+        document.getElementById('codeNextHit').style.display = 'none';
+        const lg = document.getElementById('codeLegend');
+        lg.innerHTML = legendHtml(CODE.terms); lg.style.display = '';
         document.getElementById('codeModal').classList.add('open');
         loadCode(true);
+    }
+    async function openDbSource(owner, name, type, focus) {
+        focus = focus || {};
+        CODE.mode = 'db'; CODE.file = null;
+        document.getElementById('codeTitle').textContent = `${owner}.${name}`;
+        document.getElementById('codeSub').textContent = (TYPE_KO[type] || type) + ' 소스 읽는 중…';
+        document.getElementById('codeMore').style.display = 'none';
+        document.getElementById('codeLines').textContent = '';
+        document.getElementById('codeModal').classList.add('open');
+        try {
+            const d = await api(`/api/db/object?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`);
+            const refs = (d.references || []).filter(r => ['TABLE', 'VIEW', 'SYNONYM', 'MATERIALIZED VIEW'].includes(r.type)).map(r => r.name);
+            CODE.terms = { focusTables: focus.table ? [focus.table] : [], columns: focus.column ? [focus.column] : [], tables: refs };
+            CODE.lines = (d.source || '').replace(/\n$/, '').split('\n');
+            CODE.hits = (focus.lines || []).map(l => l.line);
+            if (!CODE.hits.length && focus.table) {
+                const re = new RegExp('(^|[^A-Za-z0-9_$#])' + focus.table + '([^A-Za-z0-9_$#]|$)', 'i');
+                CODE.lines.forEach((l, i) => { if (re.test(l)) CODE.hits.push(i + 1); });
+            }
+            CODE.hitIdx = 0;
+            document.getElementById('codeSub').textContent = `${TYPE_KO[d.type] || d.type} · ${CODE.lines.length}줄` + (CODE.hits.length ? ` · 사용 위치 ${CODE.hits.length}곳` : '');
+            const extra = d.trigger ? ` <span class="muted">트리거 대상: <b>${esc(d.trigger.table_name)}</b> ${esc(d.trigger.timing)} ${esc(d.trigger.event)}</span>` : '';
+            const lg = document.getElementById('codeLegend');
+            lg.innerHTML = legendHtml(CODE.terms, extra); lg.style.display = '';
+            document.getElementById('codeNextHit').style.display = CODE.hits.length > 1 ? '' : 'none';
+            renderDbSource();
+        } catch (e) { document.getElementById('codeLines').textContent = e.message; }
+    }
+    function renderDbSource() {
+        const box = document.getElementById('codeLines');
+        const hits = new Set(CODE.hits), st = { inComment: false };
+        box.innerHTML = CODE.lines.map((t, i) => `<div class="${hits.has(i + 1) ? 'hl' : ''}" id="dbl${i + 1}"><span class="ln">${i + 1}</span>${hlLine(t, CODE.terms, st, true)}</div>`).join('');
+        if (CODE.hits.length) document.getElementById('dbl' + CODE.hits[0])?.scrollIntoView({ block: 'center' });
+    }
+    function nextHit() {
+        if (!CODE.hits.length) return;
+        CODE.hitIdx = (CODE.hitIdx + 1) % CODE.hits.length;
+        document.getElementById('dbl' + CODE.hits[CODE.hitIdx])?.scrollIntoView({ block: 'center' });
     }
     async function loadCode(scrollToHl) {
         const box = document.getElementById('codeLines');
@@ -1001,11 +1121,12 @@
             const r = await api(`/api/source/${encodeURIComponent(CODE.file)}?start=${CODE.start}&end=${CODE.end}`);
             CODE.total = r.total; CODE.end = r.end;
             let inSql = false;
+            const st = { inComment: false };
             box.innerHTML = r.lines.map((t, i) => {
                 const n = r.start + i;
                 if (/EXEC\s+SQL/i.test(t)) inSql = true;
                 const cls = (n >= CODE.hl && n <= CODE.hlEnd ? 'hl ' : '') + (inSql ? 'sql' : '');
-                const html = `<div class="${cls}" ${n === CODE.hl ? 'id="hlLine"' : ''}><span class="ln">${n}</span>${esc(t)}</div>`;
+                const html = `<div class="${cls}" ${n === CODE.hl ? 'id="hlLine"' : ''}><span class="ln">${n}</span>${hlLine(t, CODE.terms, st, inSql)}</div>`;
                 if (inSql && /;\s*$|END-EXEC/i.test(t)) inSql = false;
                 return html;
             }).join('');
@@ -1013,6 +1134,7 @@
         } catch (e) { box.textContent = e.message; }
     }
     function moreCode(n) {
+        if (CODE.mode !== 'proc') return;
         if (n < 0) CODE.start = Math.max(1, CODE.start + n); else CODE.end = Math.min(CODE.total || CODE.end + n, CODE.end + n);
         loadCode(false);
     }
