@@ -34,7 +34,7 @@ from config import (
     OLLAMA_HOST,
 )
 from db_runtime import SchemaMeta, column_type_text
-from impact_engine import ScenarioError, analyze_impact, normalize_scenario
+from impact_engine import ScenarioError, analyze_impact_live, normalize_scenario
 from schemas import AgentState, ConversationTurn
 from source_repository import get_index, read_source_text
 
@@ -309,6 +309,11 @@ def impact_facts(result: Dict) -> str:
             readers = ", ".join(f"{r['program']}.{r['function']}" + (" (배치상 뒤)" if r.get("after") else "")
                                 for r in d["readers"][:6])
             lines.append(f"- {d['from_program']}.{d['from_function']} 이(가) {d['table']} 에 씀 → 읽는 곳: {readers}")
+    if result.get("db_objects"):
+        lines.append("[DB 안의 사용처 (프로시저·패키지·트리거·뷰)]")
+        for o in result["db_objects"][:15]:
+            hit = f" — 컬럼 사용 {len(o['lines'])}줄 (예: {o['lines'][0]['line']}줄 {o['lines'][0]['text'].strip()[:80]})" if o.get("lines") else ""
+            lines.append(f"- {o['type']} {o['owner']}.{o['name']}{hit}")
     if result.get("db_checks"):
         rows = []
         for c in result["db_checks"]:
@@ -349,6 +354,11 @@ def fallback_report(result: Dict) -> str:
         for d in result["downstream"][:10]:
             readers = ", ".join(f"{r['program']}.{r['function']}" for r in d["readers"][:6])
             out.append(f"- {d['from_program']}.{d['from_function']} → {d['table']} → {readers}")
+    if result.get("db_objects"):
+        out.append("## DB 안의 사용처 (프로시저·트리거·뷰)")
+        for o in result["db_objects"][:20]:
+            hit = f" — 컬럼 사용 {len(o['lines'])}줄" if o.get("lines") else ""
+            out.append(f"- {o['type']} {o['owner']}.{o['name']}{hit}")
     if result.get("notes"):
         out.append("## 참고 사항\n" + "\n".join(f"- {n}" for n in result["notes"]))
     return "\n\n".join(out)
@@ -527,7 +537,7 @@ def route_after_extract(state: AgentState) -> str:
 
 
 def node_run_impact(state: AgentState) -> dict:
-    result = analyze_impact(get_index(), state["scenario"])
+    result = analyze_impact_live(get_index(), state["scenario"])
     return {"impact": result, "scenario": result["scenario"]}
 
 

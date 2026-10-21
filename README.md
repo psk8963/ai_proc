@@ -98,9 +98,14 @@ HOST_LONG_BITS=64               # Pro*C 가 도는 서버의 C long 크기 (64bi
   Python 이 64bit 라 클라이언트도 64bit 여야 합니다. Instant Client 는 설치 없이 zip 만 풀면 되고, 기존 11g 클라이언트와 Toad 에는 영향이 없습니다.
   집 PC 에서 oracle.com 에서 받아 프로젝트 폴더(`C:\workspace\ai_proc\instantclient_19_xx`)에 풀어서 같이 옮기면 됩니다.
   Instant Client 19 를 쓰려면 **Visual C++ 2017 재배포 패키지(x64)** 가 PC 에 있어야 합니다.
-- **메타데이터 갱신은 소스를 먼저 등록한 뒤에** 누르세요. 기본(`ORACLE_META_SCOPE=referenced`)은 소스가 쓰는 테이블만 읽어서
-  11g 에서도 빠릅니다. 스키마 전체가 필요하면 `ORACLE_META_SCOPE=all` (오래 걸리면 `META_CALL_TIMEOUT_MS` 를 늘림).
-- 서버 실행 후 왼쪽 **연결 확인** → **메타데이터 갱신** 을 누르면 `analysis_index\schema_snapshot.json` 이 만들어집니다.
+- **DB 접속만 되면 따로 갱신할 필요가 없습니다.**
+  - **DB 조회** 탭은 Toad 처럼 스키마의 오브젝트 목록(테이블·뷰·프로시저·함수·패키지·트리거·시퀀스·시노님)을 먼저 가볍게 읽고,
+    클릭한 오브젝트의 상세(컬럼·인덱스·제약·소스·참조 관계)만 그때 읽습니다. 실제 데이터는 SQL 창에서 SELECT 로 봅니다.
+  - **영향도 분석**은 분석하는 테이블과 같은 프로그램들이 쓰는 테이블의 메타데이터만 그때 읽어 `analysis_index` 에 캐시하고,
+    DB 안에서 그 테이블을 쓰는 프로시저·패키지·트리거·뷰(컬럼 이름이 나오는 소스 줄 포함)도 같이 보여줍니다.
+- 왼쪽 **메타데이터 저장** 은 소스가 쓰는 테이블 정보를 한 번에 파일로 저장하는 기능입니다(집 PC 오프라인 분석용).
+  `ORACLE_META_SCOPE=all` 이면 스키마 전체를 저장합니다(오래 걸리면 `META_CALL_TIMEOUT_MS` 를 늘림).
+- 저장된 메타데이터는 `analysis_index\schema_snapshot.json` 입니다.
   이 파일을 집 PC 로 가져가면 DB 없이도 같은 메타데이터로 분석할 수 있습니다(회사 보안 정책을 먼저 확인하세요).
 
 **안전장치**: SQL 창은 `SELECT` / `WITH` 한 문장만 받고, 모든 조회는 `SET TRANSACTION READ ONLY` 안에서

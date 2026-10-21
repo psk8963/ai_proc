@@ -220,46 +220,48 @@ def _bind_list(prefix: str, names: List[str]):
     return ", ".join(":" + k for k in keys), dict(zip(keys, names))
 
 
-def refresh_snapshot(referenced_tables: Optional[List[str]] = None) -> Dict:
-    """DB 에서 메타데이터를 읽어 스냅샷을 새로 저장한다.
+_user_cache: Dict[str, str] = {}
 
-    대상 스키마: ORACLE_SCHEMAS(없으면 접속 계정) + 소스가 쓰는 테이블의 시노님이 가리키는 스키마.
-    ORACLE_META_SCOPE=referenced(기본)이면 등록된 소스가 쓰는 테이블만 읽는다(테이블이 수천 개인 스키마에서 빠름).
-    11g 의 ALL_* 뷰는 조인하면 매우 느려서, 뷰마다 따로 조회한 뒤 파이썬에서 합친다.
-    """
-    user = (test_connection().get("user") or config.ORACLE_USER).upper()
-    owners = list(config.ORACLE_SCHEMAS) or [user]
-    refs = sorted({t.upper() for t in (referenced_tables or [])})
 
+def current_user() -> str:
+    key = f"{config.ORACLE_USER}@{config.ORACLE_DSN}"
+    if key not in _user_cache:
+        _user_cache[key] = (test_connection().get("user") or config.ORACLE_USER).upper()
+    return _user_cache[key]
+
+
+def default_owners() -> List[str]:
+    return list(config.ORACLE_SCHEMAS) or [current_user()]
+
+
+def _resolve_synonyms(names: List[str]) -> Dict[str, Dict]:
+    """내 스키마/PUBLIC 시노님 → 실제 테이블. 내 스키마 시노님이 PUBLIC 보다 우선."""
+    user = current_user()
     synonyms: Dict[str, Dict] = {}
-    for clause, binds in _name_filter("SYNONYM_NAME", refs if refs else None, required=True):
-        rows = _meta_query(
-            "SELECT SYNONYM_NAME, TABLE_OWNER, TABLE_NAME, OWNER FROM ALL_SYNONYMS "
-            f"WHERE OWNER IN (:usr, 'PUBLIC') AND DB_LINK IS NULL{clause}", dict(binds, usr=user))
-        for syn, towner, tname, owner in rows:
-            if syn not in synonyms or owner != "PUBLIC":   # 내 스키마 시노님이 PUBLIC 보다 우선
+    for clause, binds in _name_filter("SYNONYM_NAME", names, required=True):
+        for syn, towner, tname, owner in _meta_query(
+                "SELECT SYNONYM_NAME, TABLE_OWNER, TABLE_NAME, OWNER FROM ALL_SYNONYMS "
+                f"WHERE OWNER IN (:usr, 'PUBLIC') AND DB_LINK IS NULL{clause}", dict(binds, usr=user)):
+            if syn not in synonyms or owner != "PUBLIC":
                 synonyms[syn] = {"owner": towner, "table": tname}
-    for sy in synonyms.values():
-        if sy["owner"] not in owners:
-            owners.append(sy["owner"])
+    return synonyms
 
-    scope_names = None
-    if config.ORACLE_META_SCOPE != "all" and refs:
-        scope_names = sorted(set(refs) | {sy["table"] for sy in synonyms.values()})
 
+def _collect_tables(owners: List[str], scope_names: Optional[List[str]]) -> Dict[str, Dict]:
+    """owners 의 테이블/뷰 메타데이터(컬럼·코멘트·PK/UK/FK). scope_names 가 있으면 그 이름만."""
     tables: Dict[str, Dict] = {}
     for owner in owners:
-        logger.info("metadata owner=%s scope=%s", owner, "referenced" if scope_names else "all")
+        logger.info("metadata owner=%s names=%s", owner, len(scope_names) if scope_names else "all")
         found = []
         for clause, binds in _name_filter("TABLE_NAME", scope_names):
-            found += [(n, r) for n, r in _meta_query(
+            found += [(n, r, "TABLE") for n, r in _meta_query(
                 f"SELECT TABLE_NAME, NUM_ROWS FROM ALL_TABLES WHERE OWNER = :o{clause}", dict(binds, o=owner))]
         for clause, binds in _name_filter("VIEW_NAME", scope_names):
-            found += [(n, None) for (n,) in _meta_query(
+            found += [(n, None, "VIEW") for (n,) in _meta_query(
                 f"SELECT VIEW_NAME FROM ALL_VIEWS WHERE OWNER = :o{clause}", dict(binds, o=owner))]
-        for name, num_rows in found:
+        for name, num_rows, kind in found:
             key = name if name not in tables else f"{owner}.{name}"
-            tables[key] = {"owner": owner, "name": name, "comment": None, "num_rows": num_rows,
+            tables[key] = {"owner": owner, "name": name, "kind": kind, "comment": None, "num_rows": num_rows,
                            "columns": [], "pk": [], "unique": [], "fks": []}
         if not found:
             continue
@@ -272,11 +274,228 @@ def refresh_snapshot(referenced_tables: Optional[List[str]] = None) -> Dict:
                     tables[key]["comment"] = comment
         _fetch_columns(owner, tables, scope_names)
         _fetch_constraints(owner, tables, scope_names)
+    return tables
+
+
+def refresh_snapshot(referenced_tables: Optional[List[str]] = None) -> Dict:
+    """DB 에서 메타데이터를 읽어 스냅샷을 새로 저장한다(집 PC 로 가져가 오프라인 분석할 때).
+
+    대상 스키마: ORACLE_SCHEMAS(없으면 접속 계정) + 소스가 쓰는 테이블의 시노님이 가리키는 스키마.
+    ORACLE_META_SCOPE=referenced(기본)이면 등록된 소스가 쓰는 테이블만 읽는다.
+    11g 의 ALL_* 뷰는 조인하면 매우 느려서, 뷰마다 따로 조회한 뒤 파이썬에서 합친다.
+    """
+    owners = default_owners()
+    refs = sorted({t.upper() for t in (referenced_tables or [])})
+    synonyms = _resolve_synonyms(refs) if refs else {}
+    for sy in synonyms.values():
+        if sy["owner"] not in owners:
+            owners.append(sy["owner"])
+    scope_names = None
+    if config.ORACLE_META_SCOPE != "all" and refs:
+        scope_names = sorted(set(refs) | {sy["table"] for sy in synonyms.values()})
+    tables = _collect_tables(owners, scope_names)
     snap = {"taken_at": _dt.datetime.now().isoformat(timespec="seconds"), "source": config.ORACLE_DSN,
             "owners": owners, "scope": "referenced" if scope_names else "all", "tables": tables, "synonyms": synonyms}
     save_snapshot(snap)
     return {"tables": len(tables), "owners": owners, "synonyms": len(synonyms), "taken_at": snap["taken_at"],
             "scope": snap["scope"]}
+
+
+_ensure_lock = threading.Lock()
+NOT_FOUND_RETRY_SEC = 3600
+
+
+def ensure_tables(names: List[str]) -> Dict:
+    """분석에 필요한 테이블 메타데이터만 그때그때 DB 에서 읽어 스냅샷(캐시)에 더한다.
+
+    이미 캐시에 있으면 DB 에 가지 않는다. DB 에 없는 이름은 1시간 동안 다시 찾지 않는다.
+    반환: {"fetched": [...], "not_found": [...]}
+    """
+    want = sorted({n.upper() for n in names if n})
+    if not want or not config.db_configured():
+        return {"fetched": [], "not_found": []}
+    with _ensure_lock:
+        snap = load_snapshot()
+        snap = {**snap, "tables": dict(snap.get("tables") or {}), "synonyms": dict(snap.get("synonyms") or {}),
+                "not_found": dict(snap.get("not_found") or {})}
+        meta = SchemaMeta(snap)
+        now = _dt.datetime.now()
+        missing = []
+        for n in want:
+            if meta.table(n):
+                continue
+            nf = snap["not_found"].get(n)
+            if nf and (now - _dt.datetime.fromisoformat(nf)).total_seconds() < NOT_FOUND_RETRY_SEC:
+                continue
+            missing.append(n)
+        if not missing:
+            return {"fetched": [], "not_found": []}
+        synonyms = _resolve_synonyms(missing)
+        owners = default_owners()
+        for sy in synonyms.values():
+            if sy["owner"] not in owners:
+                owners.append(sy["owner"])
+        scope = sorted(set(missing) | {sy["table"] for sy in synonyms.values()})
+        found = _collect_tables(owners, scope)
+        for key, t in found.items():
+            k = t["name"] if t["name"] not in snap["tables"] or snap["tables"][t["name"]].get("owner") == t["owner"] \
+                else f"{t['owner']}.{t['name']}"
+            snap["tables"][k] = t
+        snap["synonyms"].update(synonyms)
+        meta = SchemaMeta(snap)
+        fetched = [n for n in missing if meta.table(n)]
+        not_found = [n for n in missing if not meta.table(n)]
+        for n in not_found:
+            snap["not_found"][n] = now.isoformat(timespec="seconds")
+        snap.setdefault("taken_at", now.isoformat(timespec="seconds"))
+        snap["source"] = snap.get("source") or config.ORACLE_DSN
+        snap["updated_at"] = now.isoformat(timespec="seconds")
+        save_snapshot(snap)
+        logger.info("ensure_tables fetched=%d not_found=%d", len(fetched), len(not_found))
+        return {"fetched": fetched, "not_found": not_found}
+
+
+# ---------- 오브젝트 브라우저 (Toad 처럼) ----------
+
+OBJECT_TYPES = ["TABLE", "VIEW", "MATERIALIZED VIEW", "PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE BODY",
+                "TRIGGER", "SEQUENCE", "SYNONYM", "TYPE", "TYPE BODY"]
+CODE_TYPES = ("PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE BODY", "TRIGGER", "TYPE", "TYPE BODY")
+_objects_cache: Dict[str, Dict] = {}
+OBJECTS_CACHE_SEC = 600
+
+
+def list_owners() -> Dict:
+    """선택할 수 있는 스키마: 설정한 스키마 + 접속 계정 + 오브젝트를 가진 스키마(조회 권한 있는 것)."""
+    base = default_owners()
+    rows = _meta_query("SELECT DISTINCT OWNER FROM ALL_OBJECTS WHERE OBJECT_TYPE IN ('TABLE','PROCEDURE','PACKAGE')", {})
+    others = sorted({r[0] for r in rows} - set(base))
+    return {"default": base, "owners": base + others}
+
+
+def list_objects(owner: Optional[str] = None, refresh: bool = False) -> Dict:
+    """한 스키마의 오브젝트 목록(이름·종류·상태·최종 DDL). 상세는 object_detail 에서 따로 읽는다."""
+    owner = (owner or default_owners()[0]).upper()
+    cached = _objects_cache.get(owner)
+    if cached and not refresh and (_dt.datetime.now() - cached["at"]).total_seconds() < OBJECTS_CACHE_SEC:
+        return cached["data"]
+    ph, binds = _bind_list("t", OBJECT_TYPES)
+    rows = _meta_query(
+        "SELECT OBJECT_NAME, OBJECT_TYPE, STATUS, LAST_DDL_TIME FROM ALL_OBJECTS "
+        f"WHERE OWNER = :o AND OBJECT_TYPE IN ({ph}) AND GENERATED = 'N' AND OBJECT_NAME NOT LIKE 'BIN$%'",
+        dict(binds, o=owner))
+    objs = [{"name": n, "type": t, "status": st, "last_ddl": _to_json(d)} for n, t, st, d in rows]
+    objs.sort(key=lambda o: (OBJECT_TYPES.index(o["type"]) if o["type"] in OBJECT_TYPES else 99, o["name"]))
+    counts: Dict[str, int] = {}
+    for o in objs:
+        counts[o["type"]] = counts.get(o["type"], 0) + 1
+    data = {"owner": owner, "objects": objs, "counts": counts,
+            "loaded_at": _dt.datetime.now().isoformat(timespec="seconds")}
+    _objects_cache[owner] = {"at": _dt.datetime.now(), "data": data}
+    return data
+
+
+def object_detail(owner: str, name: str, otype: str) -> Dict:
+    owner, name, otype = owner.upper(), name.upper(), otype.upper()
+    out: Dict[str, Any] = {"owner": owner, "name": name, "type": otype}
+    if otype in ("TABLE", "VIEW", "MATERIALIZED VIEW"):
+        t = _collect_tables([owner], [name]).get(name)
+        if t:
+            out["table"] = t
+            _cache_table(t)
+        out["indexes"] = _indexes(owner, name)
+        if otype == "VIEW":
+            rows = _meta_query("SELECT TEXT FROM ALL_VIEWS WHERE OWNER = :o AND VIEW_NAME = :n", {"o": owner, "n": name})
+            out["source"] = str(rows[0][0]) if rows and rows[0][0] is not None else ""
+        out["used_by"] = [{"owner": o, "name": n, "type": t} for o, n, t in _meta_query(
+            "SELECT OWNER, NAME, TYPE FROM ALL_DEPENDENCIES WHERE REFERENCED_OWNER = :o AND REFERENCED_NAME = :n "
+            "AND OWNER NOT IN ('SYS','SYSTEM','PUBLIC') ORDER BY TYPE, OWNER, NAME", {"o": owner, "n": name})]
+    elif otype in CODE_TYPES:
+        rows = _meta_query("SELECT LINE, TEXT FROM ALL_SOURCE WHERE OWNER = :o AND NAME = :n AND TYPE = :t ORDER BY LINE",
+                           {"o": owner, "n": name, "t": otype})
+        out["source"] = "".join(str(t or "") for _, t in rows[:30000])
+        out["lines"] = len(rows)
+        out["references"] = [{"owner": o, "name": n, "type": t} for o, n, t in _meta_query(
+            "SELECT REFERENCED_OWNER, REFERENCED_NAME, REFERENCED_TYPE FROM ALL_DEPENDENCIES "
+            "WHERE OWNER = :o AND NAME = :n AND TYPE = :t AND REFERENCED_OWNER NOT IN ('SYS','PUBLIC') "
+            "ORDER BY REFERENCED_TYPE, REFERENCED_NAME", {"o": owner, "n": name, "t": otype})]
+        if otype == "TRIGGER":
+            rows = _meta_query("SELECT TABLE_OWNER, TABLE_NAME, TRIGGERING_EVENT, TRIGGER_TYPE, STATUS FROM ALL_TRIGGERS "
+                               "WHERE OWNER = :o AND TRIGGER_NAME = :n", {"o": owner, "n": name})
+            if rows:
+                out["trigger"] = dict(zip(["table_owner", "table_name", "event", "timing", "status"], rows[0]))
+    elif otype == "SEQUENCE":
+        rows = _meta_query("SELECT MIN_VALUE, MAX_VALUE, INCREMENT_BY, CYCLE_FLAG, CACHE_SIZE, LAST_NUMBER "
+                           "FROM ALL_SEQUENCES WHERE SEQUENCE_OWNER = :o AND SEQUENCE_NAME = :n", {"o": owner, "n": name})
+        if rows:
+            out["sequence"] = dict(zip(["min", "max", "increment", "cycle", "cache", "last_number"],
+                                       [_to_json(v) for v in rows[0]]))
+    elif otype == "SYNONYM":
+        rows = _meta_query("SELECT TABLE_OWNER, TABLE_NAME, DB_LINK FROM ALL_SYNONYMS WHERE OWNER = :o AND SYNONYM_NAME = :n",
+                           {"o": owner, "n": name})
+        if rows:
+            out["synonym"] = dict(zip(["table_owner", "table_name", "db_link"], rows[0]))
+    return out
+
+
+def _indexes(owner: str, name: str) -> List[Dict]:
+    idx: Dict[str, Dict] = {}
+    for iname, uniq in _meta_query("SELECT INDEX_NAME, UNIQUENESS FROM ALL_INDEXES WHERE TABLE_OWNER = :o AND TABLE_NAME = :n",
+                                   {"o": owner, "n": name}):
+        idx[iname] = {"name": iname, "unique": uniq == "UNIQUE", "columns": []}
+    for iname, col, pos in _meta_query(
+            "SELECT INDEX_NAME, COLUMN_NAME, COLUMN_POSITION FROM ALL_IND_COLUMNS WHERE TABLE_OWNER = :o AND TABLE_NAME = :n",
+            {"o": owner, "n": name}):
+        if iname in idx:
+            idx[iname]["columns"].append((pos, col))
+    for i in idx.values():
+        i["columns"] = [c for _, c in sorted(i["columns"])]
+    return sorted(idx.values(), key=lambda i: (not i["unique"], i["name"]))
+
+
+def _cache_table(t: Dict):
+    """상세 조회한 테이블은 스냅샷 캐시에도 넣어 영향도 분석이 바로 쓰게 한다."""
+    with _ensure_lock:
+        snap = load_snapshot()
+        snap = {**snap, "tables": dict(snap.get("tables") or {})}
+        cur = snap["tables"].get(t["name"])
+        key = t["name"] if not cur or cur.get("owner") == t["owner"] else f"{t['owner']}.{t['name']}"
+        snap["tables"][key] = t
+        snap["updated_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+        snap.setdefault("source", config.ORACLE_DSN)
+        save_snapshot(snap)
+
+
+def db_dependents(table: str, column: Optional[str] = None, limit: int = 60) -> List[Dict]:
+    """DB 안에서 이 테이블을 쓰는 프로시저·패키지·트리거·뷰. column 이 있으면 그 이름이 나오는 소스 줄도."""
+    meta = SchemaMeta()
+    t = meta.table(table)
+    owner = (t or {}).get("owner") or default_owners()[0]
+    tname = (t or {}).get("name") or table.upper()
+    deps = _meta_query(
+        "SELECT OWNER, NAME, TYPE FROM ALL_DEPENDENCIES WHERE REFERENCED_OWNER = :o AND REFERENCED_NAME = :n "
+        "AND OWNER NOT IN ('SYS','SYSTEM','PUBLIC') ORDER BY TYPE, OWNER, NAME", {"o": owner, "n": tname})[:limit]
+    out = [{"owner": o, "name": n, "type": ty, "lines": []} for o, n, ty in deps]
+    if column and out:
+        col = column.upper()
+        word = re.compile(r"(?<![A-Z0-9_$#])" + re.escape(col) + r"(?![A-Z0-9_$#])")
+        by_owner: Dict[str, List[Dict]] = {}
+        for d in out:
+            if d["type"] in CODE_TYPES:
+                by_owner.setdefault(d["owner"], []).append(d)
+        for o, items in by_owner.items():
+            names = sorted({d["name"] for d in items})
+            for clause, binds in _name_filter("NAME", names):
+                for name, ty, line, text in _meta_query(
+                        "SELECT NAME, TYPE, LINE, TEXT FROM ALL_SOURCE WHERE OWNER = :o AND INSTR(UPPER(TEXT), :c) > 0"
+                        f"{clause} ORDER BY NAME, TYPE, LINE", dict(binds, o=o, c=col)):
+                    if not word.search(str(text or "").upper()):
+                        continue
+                    for d in items:
+                        if d["name"] == name and d["type"] == ty and len(d["lines"]) < 20:
+                            d["lines"].append({"line": line, "text": str(text).rstrip()[:200]})
+        for d in out:
+            d["uses_column"] = bool(d["lines"]) if d["type"] in CODE_TYPES else None
+    return out
 
 
 def _name_filter(column: str, names: Optional[List[str]], required: bool = False):

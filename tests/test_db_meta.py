@@ -24,6 +24,21 @@ class FakeCursor:
             self.rows = [r for r in data if not names or r[0] in names]
         elif "FROM ALL_VIEWS" in sql:
             self.rows = []
+        elif "FROM ALL_OBJECTS" in sql:
+            self.rows = [("TB_ORDER", "TABLE", "VALID", None), ("PRC_CLOSE", "PROCEDURE", "INVALID", None)]
+        elif "FROM ALL_DEPENDENCIES WHERE REFERENCED_OWNER" in sql:
+            self.rows = [("APP", "PRC_CLOSE", "PROCEDURE"), ("APP", "TRG_ORDER", "TRIGGER")]
+        elif "FROM ALL_DEPENDENCIES" in sql:
+            self.rows = [("APP", "TB_ORDER", "TABLE")]
+        elif "FROM ALL_SOURCE" in sql and "INSTR" in sql:
+            self.rows = [("PRC_CLOSE", "PROCEDURE", 12, "  UPDATE TB_ORDER SET STATUS = '09'\n"),
+                         ("PRC_CLOSE", "PROCEDURE", 13, "  -- STATUS_OLD 는 안 씀\n")]
+        elif "FROM ALL_SOURCE" in sql:
+            self.rows = [(1, "PROCEDURE PRC_CLOSE IS\n"), (2, "BEGIN NULL; END;\n")]
+        elif "FROM ALL_INDEXES" in sql:
+            self.rows = [("PK_ORDER", "UNIQUE")]
+        elif "FROM ALL_IND_COLUMNS" in sql:
+            self.rows = [("PK_ORDER", "ORD_NO", 1)]
         elif "ALL_TAB_COMMENTS" in sql:
             self.rows = [("TB_ORDER", "주문")] if params["o"] == "APP" else []
         elif "ALL_TAB_COLUMNS" in sql:
@@ -95,3 +110,43 @@ def test_refresh_snapshot_referenced_scope(monkeypatch):
 def test_timeout_error_message():
     err = db_runtime._wrap_db_error(Exception("DPY-4024: call timeout of 30000 ms exceeded"))
     assert err.code == "DB_TIMEOUT" and "META_CALL_TIMEOUT_MS" in err.message
+
+
+def _fake(monkeypatch):
+    pool = FakePool()
+    monkeypatch.setattr(db_runtime, "_get_pool", lambda: pool)
+    monkeypatch.setattr(db_runtime.config, "ORACLE_SCHEMAS", [])
+    monkeypatch.setattr(db_runtime.config, "ORACLE_USER", "app")
+    monkeypatch.setattr(db_runtime.config, "ORACLE_DSN", "fake:1521/x")
+    db_runtime._user_cache.clear()
+    db_runtime._objects_cache.clear()
+    return pool
+
+
+def test_object_browser(monkeypatch):
+    _fake(monkeypatch)
+    objs = db_runtime.list_objects()
+    assert objs["owner"] == "APP" and objs["counts"] == {"TABLE": 1, "PROCEDURE": 1}
+    d = db_runtime.object_detail("APP", "TB_ORDER", "TABLE")
+    assert d["table"]["pk"] == ["ORD_NO"] and d["indexes"][0]["columns"] == ["ORD_NO"]
+    assert {o["name"] for o in d["used_by"]} == {"PRC_CLOSE", "TRG_ORDER"}
+    assert SchemaMeta().table("TB_ORDER")                           # 상세 조회한 테이블은 캐시에 저장
+    p = db_runtime.object_detail("APP", "PRC_CLOSE", "PROCEDURE")
+    assert p["source"].startswith("PROCEDURE PRC_CLOSE") and p["references"][0]["name"] == "TB_ORDER"
+
+
+def test_live_impact_fetches_only_needed_tables(monkeypatch):
+    import os
+    from impact_engine import analyze_impact_live
+    from source_repository import get_index
+    pool = _fake(monkeypatch)
+    os.remove(db_runtime.config.SCHEMA_SNAPSHOT_PATH)               # 캐시 없음에서 시작
+    r = analyze_impact_live(get_index(), {"table": "TB_ORDER", "column": "STATUS", "change": "length", "new_length": 1})
+    tables_sql = [p for s, p in pool.sqls if "FROM ALL_TABLES" in s]
+    assert tables_sql and all(any(k.startswith("n") for k in p) for p in tables_sql)   # 이름을 지정해서만 조회
+    assert SchemaMeta().table("TB_ORDER") and any("DB 에서 테이블" in n for n in r["notes"])
+    prc = next(o for o in r["db_objects"] if o["name"] == "PRC_CLOSE")
+    assert prc["uses_column"] and [l["line"] for l in prc["lines"]] == [12]   # STATUS_OLD 는 단어가 달라 제외
+    n_before = len(pool.sqls)
+    analyze_impact_live(get_index(), {"table": "TB_ORDER", "column": "STATUS", "change": "nullable", "nullable": True})
+    assert not any("FROM ALL_TABLES" in s for s, _ in pool.sqls[n_before:])  # 두 번째는 캐시 사용

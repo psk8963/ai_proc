@@ -13,7 +13,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 import config
-from db_runtime import SchemaMeta, column_type_text
+from db_runtime import DbError, SchemaMeta, column_type_text, db_dependents, ensure_tables
 from source_repository import ProjectIndex
 
 CHANGE_TYPES = {
@@ -389,6 +389,25 @@ def _rule_length(idx, s, m, cmeta, tmeta, out, db_checks, notes):
                 out.add(st, "INFO", "참고", "조건 변수 크기",
                         f"WHERE 조건의 :{b['host']}(최대 {hv['capacity']}바이트)가 새 길이보다 작아 긴 값으로는 조회할 수 없습니다.",
                         b, certain=certain)
+    # SQL 에 직접 적은 상수가 새 길이보다 긴 경우
+    if not grow:
+        for st in _stmts(idx):
+            for lit in st.get("literals") or []:
+                ok, certain = m.ref(lit)
+                if not ok:
+                    continue
+                long_vals = [v for v in lit.get("values") or [] if v is not None
+                             and len(str(v).encode(_db_encoding())) > new_b]
+                if not long_vals:
+                    continue
+                if lit.get("context") in ("set", "insert"):
+                    out.add(st, "ERROR", "ORA-12899", "저장 상수 길이 초과",
+                            f"{C} 에 상수 {', '.join(repr(v) for v in long_vals[:3])} 를 저장합니다. 길이를 {new_len} 로 줄이면 ORA-12899 오류가 납니다.",
+                            certain=certain)
+                else:
+                    out.add(st, "WARN", "조건 불일치", "조건 상수가 새 길이보다 김",
+                            f"조건 {C} {lit['op']} {', '.join(repr(v) for v in long_vals[:3])} 는 길이를 {new_len} 로 줄이면 맞는 행이 없어집니다(처리 대상 0건).",
+                            certain=certain)
     # INSERT ... SELECT / UPDATE SET 로 다른 테이블에 옮겨 담는 경우
     for st in _stmts(idx):
         for ln in st.get("lineage") or []:
@@ -815,3 +834,52 @@ def _downstream(idx: ProjectIndex, findings: List[Dict], s: Dict) -> List[Dict]:
                                                                        r["program"]))[:20],
                     })
     return flows
+
+
+# ---------- DB 연동 (필요한 테이블만 그때그때) ----------
+
+def related_tables(idx: ProjectIndex, table: str, cap: int = 300) -> List[str]:
+    """table 과 함께 분석해야 할 테이블: table 을 쓰는 프로그램들이 읽고 쓰는 모든 테이블."""
+    t = table.upper()
+    progs = {u["program"] for u in idx.table_usage.get(t, [])}
+    names = [t]
+    for st in idx.statements.values():
+        if st["program"] in progs:
+            for tb in st.get("tables") or []:
+                names.append(tb["name"])
+            for ln in st.get("lineage") or []:
+                if ln.get("target_table"):
+                    names.append(ln["target_table"])
+    return list(dict.fromkeys(names))[:cap]
+
+
+def analyze_impact_live(idx: ProjectIndex, scenario: Dict) -> Dict:
+    """DB 가 연결되어 있으면 필요한 테이블 메타데이터만 먼저 읽어 오고(캐시), DB 안의 프로시저·트리거 사용처도 붙인다."""
+    notes: List[str] = []
+    s = normalize_scenario(scenario)
+    if config.db_configured():
+        try:
+            r = ensure_tables(related_tables(idx, s["table"]))
+            if r["fetched"]:
+                notes.append(f"DB 에서 테이블 {len(r['fetched'])}개의 정보를 읽어 왔습니다: {', '.join(r['fetched'][:10])}"
+                             + (" …" if len(r["fetched"]) > 10 else ""))
+            if s["table"] in r["not_found"]:
+                notes.append(f"DB 에서 {s['table']} 를 찾지 못했습니다. (스키마 · 시노님 · 조회 권한 확인)")
+        except DbError as e:
+            notes.append(f"DB 메타데이터를 읽지 못해 저장된 정보로 분석했습니다. ({e.message})")
+    result = analyze_impact(idx, s)
+    result["db_objects"] = []
+    if config.db_configured():
+        try:
+            col = s.get("column") if s["change"] not in ("drop_table", "rename_table") else None
+            objs = db_dependents(s["table"], col)
+            result["db_objects"] = objs
+            if objs:
+                using = [o for o in objs if o.get("uses_column")]
+                notes.append(f"DB 안에서 {s['table']} 를 참조하는 오브젝트 {len(objs)}개"
+                             + (f" (그중 {col} 를 쓰는 소스 {len(using)}개)" if col else "")
+                             + " — Pro*C 와 별도로 확인이 필요합니다.")
+        except DbError as e:
+            notes.append(f"DB 프로시저·트리거 사용처를 조회하지 못했습니다. ({e.message})")
+    result["notes"] = notes + list(result.get("notes") or [])
+    return result

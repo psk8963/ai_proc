@@ -88,3 +88,10 @@ def test_readonly_sql_validation():
     for bad in ("DELETE FROM T", "SELECT 1 FROM DUAL; DROP TABLE T", "SELECT * FROM T FOR UPDATE", "  "):
         with pytest.raises(DbError):
             validate_readonly_sql(bad)
+
+
+def test_length_shrink_literals():
+    r = _run(table="TB_ORDER", column="STATUS", change="length", new_length=1)
+    c = _codes(r)
+    assert ("ORD010", "confirm_order", "ORA-12899", "ERROR") in c      # SET STATUS = '02'
+    assert any(f["code"] == "조건 불일치" and f["function"] == "fetch_orders" for f in r["findings"])

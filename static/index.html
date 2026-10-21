@@ -142,6 +142,8 @@
         .list-items div.item:hover { background: #f1f5f9; }
         .list-items div.item.active { background: #eff6ff; }
         .list-items .sub { color: var(--text-muted); font-size: 0.72rem; }
+        a.objlink { color: var(--primary-color); text-decoration: none; font-family: var(--mono); }
+        a.objlink:hover { text-decoration: underline; }
         .detail-pane { flex: 1; min-width: 0; overflow: auto; }
         textarea.sql { width: 100%; height: 130px; font-family: var(--mono); font-size: 0.85rem; resize: vertical; }
         .grid-wrap { overflow: auto; max-height: 48vh; border: 1px solid var(--border-color); border-radius: 8px; }
@@ -206,7 +208,7 @@
         <div class="db-box" id="dbBox">불러오는 중…</div>
         <div class="row" style="margin-top:8px">
             <button class="ghost small grow" onclick="checkDb()">연결 확인</button>
-            <button class="small grow" id="refreshMetaBtn" onclick="refreshMeta()">메타데이터 갱신</button>
+            <button class="small grow" id="refreshMetaBtn" onclick="refreshMeta()" title="소스가 쓰는 테이블 정보를 한 번에 저장(집 PC 오프라인 분석용). 평소에는 분석할 때 필요한 테이블만 자동으로 읽습니다.">메타데이터 저장</button>
         </div>
         <p id="dbStatus" class="status-line"></p>
         <div class="muted" id="llmInfo" style="margin-top:auto;padding-top:10px"></div>
@@ -261,11 +263,17 @@
         <section class="tab-page" id="tab-db">
             <div class="split">
                 <div class="list-pane">
-                    <input type="text" id="tblFilter" placeholder="테이블 검색" oninput="renderTableList()">
+                    <div id="objControls" class="row" style="margin:8px 8px 0;display:none">
+                        <select id="objOwner" class="grow" onchange="loadObjects(false)" title="스키마"></select>
+                        <button class="ghost small" onclick="loadObjects(true)" title="목록 새로 읽기">↻</button>
+                    </div>
+                    <select id="objType" style="margin:8px 8px 0;display:none" onchange="renderTableList()"></select>
+                    <input type="text" id="tblFilter" placeholder="이름 검색" oninput="renderTableList()">
+                    <div class="muted" id="objInfo" style="padding:0 10px 6px"></div>
                     <div class="list-items" id="tblItems"></div>
                 </div>
                 <div class="detail-pane">
-                    <div id="tblDetail" class="muted">왼쪽에서 테이블을 고르면 컬럼과 사용하는 Pro*C 를 보여줍니다.</div>
+                    <div id="tblDetail" class="muted">왼쪽에서 오브젝트를 고르면 컬럼·소스와 사용하는 Pro*C 를 보여줍니다.</div>
                     <h4>SQL 실행 <span class="muted">(SELECT / WITH 만, 읽기 전용 트랜잭션 · Ctrl+Enter)</span></h4>
                     <textarea class="sql" id="sqlText" placeholder="SELECT * FROM TB_ORDER WHERE STATUS = '01'"
                               onkeydown="if((event.ctrlKey||event.metaKey) && event.key==='Enter'){event.preventDefault();runSql();}"></textarea>
@@ -642,6 +650,19 @@
             });
             d.appendChild(ul); root.appendChild(d);
         }
+        if (r.db_objects && r.db_objects.length) {
+            const d = el('div', 'result-card');
+            d.appendChild(el('h4', null, `DB 안의 사용처 — 프로시저·패키지·트리거·뷰 (${r.db_objects.length})`));
+            const ul = el('ul');
+            r.db_objects.forEach(o => {
+                const li = el('li');
+                li.innerHTML = `<b class="mono">${esc(o.owner)}.${esc(o.name)}</b> <span class="badge Q">${esc(TYPE_KO[o.type] || o.type)}</span>`
+                    + (o.uses_column ? ' <span class="badge WARN">컬럼 사용</span>' : '')
+                    + (o.lines && o.lines.length ? '<div class="path mono">' + o.lines.slice(0, 3).map(l => `${esc(l.line)}: ${esc(l.text.trim())}`).join('<br>') + '</div>' : '');
+                ul.appendChild(li);
+            });
+            d.appendChild(ul); root.appendChild(d);
+        }
         if (r.db_checks && r.db_checks.length) {
             const d = el('div', 'result-card');
             d.appendChild(el('h4', null, 'DB 로 확인해 볼 내용'));
@@ -696,8 +717,41 @@
 
     // ---------- DB 조회 ----------
     let curTable = null;
-    async function loadTables() { if (!TABLES) await loadTableNames(); renderTableList(); }
+    const DBOBJ = { mode: 'source', owner: null, objects: [], ownersLoaded: false, active: null };
+    const TYPE_KO = { 'TABLE': '테이블', 'VIEW': '뷰', 'MATERIALIZED VIEW': 'MView', 'PROCEDURE': '프로시저', 'FUNCTION': '함수',
+                      'PACKAGE': '패키지', 'PACKAGE BODY': '패키지 본문', 'TRIGGER': '트리거', 'SEQUENCE': '시퀀스',
+                      'SYNONYM': '시노님', 'TYPE': '타입', 'TYPE BODY': '타입 본문' };
+    async function loadTables() {
+        if (STATUS && STATUS.db.configured) { if (!DBOBJ.objects.length) await loadObjects(false); else renderTableList(); return; }
+        if (!TABLES) await loadTableNames();
+        renderTableList();
+    }
+    async function loadObjects(refresh) {
+        const info = document.getElementById('objInfo');
+        info.textContent = '오브젝트 목록 읽는 중…';
+        try {
+            if (!DBOBJ.ownersLoaded) {
+                const o = await api('/api/db/owners');
+                document.getElementById('objOwner').innerHTML = o.owners.map(x => `<option>${esc(x)}</option>`).join('');
+                DBOBJ.ownersLoaded = true;
+            }
+            const owner = document.getElementById('objOwner').value;
+            const r = await api(`/api/db/objects?owner=${encodeURIComponent(owner)}&refresh=${refresh ? 'true' : 'false'}`);
+            DBOBJ.mode = 'db'; DBOBJ.owner = r.owner; DBOBJ.objects = r.objects;
+            const sel = document.getElementById('objType'), prev = sel.value;
+            sel.innerHTML = '<option value="">전체 종류</option>' + Object.entries(r.counts).map(([t, n]) => `<option value="${esc(t)}">${esc(TYPE_KO[t] || t)} (${n})</option>`).join('');
+            sel.value = prev && r.counts[prev] ? prev : (r.counts['TABLE'] ? 'TABLE' : '');
+            document.getElementById('objControls').style.display = sel.style.display = '';
+            info.textContent = `${r.owner} · ${r.objects.length}개 · ${r.loaded_at}`;
+        } catch (e) {
+            DBOBJ.mode = 'source';
+            info.textContent = 'DB 목록을 못 읽어 소스 기준 테이블만 보여줍니다: ' + e.message;
+            if (!TABLES) await loadTableNames();
+        }
+        renderTableList();
+    }
     function renderTableList() {
+        if (DBOBJ.mode === 'db') return renderObjectList();
         const f = document.getElementById('tblFilter').value.trim().toUpperCase();
         const box = document.getElementById('tblItems');
         const list = (TABLES || []).filter(t => !f || t.name.includes(f) || (t.comment || '').toUpperCase().includes(f)).slice(0, 500);
@@ -731,6 +785,72 @@
                 document.getElementById('sqlText').value = `SELECT * FROM ${r.name} WHERE ROWNUM <= 100`; runSql();
             };
             document.getElementById('toImpactBtn').onclick = () => { document.getElementById('impTable').value = r.name; loadColumnsFor(r.name); gotoTab('impact'); };
+        } catch (e) { box.textContent = e.message; }
+    }
+    function renderObjectList() {
+        const f = document.getElementById('tblFilter').value.trim().toUpperCase();
+        const t = document.getElementById('objType').value;
+        const box = document.getElementById('tblItems');
+        const list = DBOBJ.objects.filter(o => (!t || o.type === t) && (!f || o.name.includes(f)));
+        const shown = list.slice(0, 800);
+        box.innerHTML = shown.map((o, i) => `<div class="item${DBOBJ.active === o.type + '.' + o.name ? ' active' : ''}" data-i="${i}"><b>${esc(o.name)}</b>`
+            + ` <span class="badge Q">${esc(TYPE_KO[o.type] || o.type)}</span>${o.status !== 'VALID' ? ' <span class="badge ERROR">INVALID</span>' : ''}</div>`).join('')
+            + (list.length > shown.length ? `<div class="item muted">… 외 ${list.length - shown.length}개 (검색으로 좁혀 주세요)</div>` : '')
+            || '<div class="item muted">오브젝트가 없습니다.</div>';
+        box.querySelectorAll('.item[data-i]').forEach(d => d.onclick = () => { const o = shown[+d.dataset.i]; showObject(DBOBJ.owner, o.name, o.type); });
+    }
+    function typeText(c) {
+        const t = c.type || '?';
+        if (['VARCHAR2', 'CHAR', 'NVARCHAR2', 'NCHAR', 'VARCHAR', 'RAW'].includes(t)) return `${t}(${c.length}${c.char_used === 'C' ? ' CHAR' : ''})`;
+        if (t === 'NUMBER') return c.precision == null ? 'NUMBER' : (c.scale ? `NUMBER(${c.precision},${c.scale})` : `NUMBER(${c.precision})`);
+        return t;
+    }
+    function sourceBox(text, startLine) {
+        const lines = (text || '').replace(/\n$/, '').split('\n');
+        return `<div class="grid-wrap" style="max-height:55vh;background:#0f172a"><div class="code-lines">`
+            + lines.map((l, i) => `<div><span class="ln">${(startLine || 1) + i}</span>${esc(l)}</div>`).join('') + '</div></div>';
+    }
+    function objLink(o) { return `<a href="#" class="objlink" data-o="${esc(o.owner)}" data-n="${esc(o.name)}" data-t="${esc(o.type)}">${esc(o.owner)}.${esc(o.name)}</a> <span class="badge Q">${esc(TYPE_KO[o.type] || o.type)}</span>`; }
+    async function showObject(owner, name, type) {
+        DBOBJ.active = type + '.' + name; renderObjectList();
+        const box = document.getElementById('tblDetail');
+        box.textContent = `${name} 읽는 중…`;
+        try {
+            const d = await api(`/api/db/object?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`);
+            let html = `<h4 style="margin-top:0">${esc(d.owner)}.${esc(d.name)} <span class="badge Q">${esc(TYPE_KO[d.type] || d.type)}</span>`;
+            const t = d.table;
+            if (t) html += ` <span class="muted">${esc(t.comment || '')}${t.num_rows != null ? ' · 약 ' + esc(t.num_rows) + '행' : ''} · PK ${esc((t.pk || []).join(', ') || '없음')}</span>`;
+            html += '</h4>';
+            if (t) {
+                html += '<div class="row" style="margin-bottom:6px"><button class="ghost small" id="previewBtn">데이터 미리보기</button><button class="ghost small" id="toImpactBtn">이 테이블로 영향도 분석</button></div>';
+                const cu = d.column_usage || {};
+                html += '<div class="grid-wrap" style="max-height:32vh"><table><thead><tr><th>컬럼</th><th>타입</th><th>NULL</th><th>설명</th><th>사용하는 Pro*C 함수</th></tr></thead><tbody>'
+                    + t.columns.map(c => `<tr class="clickable" data-col="${esc(c.name)}"><td class="mono">${esc(c.name)}</td><td class="mono">${esc(typeText(c))}</td><td>${c.nullable ? 'Y' : 'N'}</td><td>${esc(c.comment || '')}</td><td class="path">${esc((cu[c.name] || []).slice(0, 6).join(', '))}</td></tr>`).join('')
+                    + '</tbody></table></div>';
+                if (d.indexes && d.indexes.length) html += '<h4>인덱스</h4><ul>' + d.indexes.map(i => `<li class="mono">${esc(i.name)}${i.unique ? ' <span class="badge INFO">UNIQUE</span>' : ''} (${esc(i.columns.join(', '))})</li>`).join('') + '</ul>';
+                const pu = d.proc_usage || [];
+                html += `<h4>사용하는 Pro*C SQL (${pu.length})</h4>` + (pu.length ? '<div class="grid-wrap" style="max-height:22vh"><table><thead><tr><th>프로그램</th><th>함수</th><th>줄</th><th>종류</th><th>R/W</th></tr></thead><tbody>'
+                    + pu.map((u, i) => `<tr class="clickable" data-u="${i}"><td>${esc(u.program)}</td><td>${esc(u.function)}</td><td class="num">${esc(u.line)}</td><td>${esc(u.kind)}</td><td>${accBadge(u.access)}</td></tr>`).join('') + '</tbody></table></div>'
+                    : '<div class="muted">등록된 Pro*C 소스에서 쓰는 곳이 없습니다.</div>');
+            }
+            if (d.used_by) html += `<h4>이 테이블을 참조하는 DB 오브젝트 (${d.used_by.length})</h4>` + (d.used_by.length ? '<ul>' + d.used_by.map(o => `<li>${objLink(o)}</li>`).join('') + '</ul>' : '<div class="muted">없음</div>');
+            if (d.trigger) html += `<div class="muted">대상 테이블: <b>${esc(d.trigger.table_owner)}.${esc(d.trigger.table_name)}</b> · ${esc(d.trigger.timing)} ${esc(d.trigger.event)} · ${esc(d.trigger.status)}</div>`;
+            if (d.references) html += `<h4>참조하는 오브젝트 (${d.references.length})</h4>` + (d.references.length ? '<ul>' + d.references.map(o => `<li>${objLink(o)}</li>`).join('') + '</ul>' : '<div class="muted">없음</div>');
+            if (d.sequence) html += '<ul>' + Object.entries(d.sequence).map(([k, v]) => `<li>${esc(k)}: <b>${esc(v)}</b></li>`).join('') + '</ul>';
+            if (d.synonym) html += `<div>→ ${objLink({ owner: d.synonym.table_owner, name: d.synonym.table_name, type: 'TABLE' })}${d.synonym.db_link ? ' @' + esc(d.synonym.db_link) : ''}</div>`;
+            if (d.source != null) html += `<h4>소스${d.lines ? ` (${d.lines}줄)` : ''}</h4>` + sourceBox(d.source);
+            box.innerHTML = html;
+            box.querySelectorAll('a.objlink').forEach(a => a.onclick = (e) => { e.preventDefault(); showObject(a.dataset.o, a.dataset.n, a.dataset.t); });
+            if (t) {
+                const pu = d.proc_usage || [];
+                box.querySelectorAll('tr[data-u]').forEach(tr => tr.onclick = () => { const u = pu[+tr.dataset.u]; openProgramLine(u.program, u.line); });
+                box.querySelectorAll('tr[data-col]').forEach(tr => tr.onclick = () => {
+                    document.getElementById('impTable').value = d.name; document.getElementById('impColumn').value = tr.dataset.col;
+                    loadColumnsFor(d.name); gotoTab('impact');
+                });
+                document.getElementById('previewBtn').onclick = () => { document.getElementById('sqlText').value = `SELECT * FROM ${d.owner}.${d.name} WHERE ROWNUM <= 100`; runSql(); };
+                document.getElementById('toImpactBtn').onclick = () => { document.getElementById('impTable').value = d.name; loadColumnsFor(d.name); gotoTab('impact'); };
+            }
         } catch (e) { box.textContent = e.message; }
     }
     async function runSql() {

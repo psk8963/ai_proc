@@ -12,7 +12,7 @@ import db_runtime
 from agent_runtime import bound_history, build_agent_graph, explain_impact, is_llm_unavailable
 from config import BASE_DIR, MAX_UPLOAD_BYTES
 from db_runtime import DbError, SchemaMeta, column_type_text
-from impact_engine import CHANGE_TYPES, DATA_OPS, ScenarioError, analyze_impact
+from impact_engine import CHANGE_TYPES, DATA_OPS, ScenarioError, analyze_impact_live
 from schemas import ChatResponse, ErrorEnvelope, Evidence, FolderImportRequest, ImpactRequest, SqlRequest
 from source_repository import (
     AssetError,
@@ -317,6 +317,41 @@ def db_refresh():
     return _guard(trace_id, run)
 
 
+@app.get("/api/db/owners")
+def db_owners():
+    trace_id = _new_trace()
+    return _guard(trace_id, lambda: dict(db_runtime.list_owners(), trace_id=trace_id))
+
+
+@app.get("/api/db/objects")
+def db_objects(owner: str = Query(""), refresh: bool = Query(False)):
+    """Toad 처럼 스키마의 오브젝트 목록(이름·종류·상태)만 가볍게 읽는다."""
+    trace_id = _new_trace()
+    return _guard(trace_id, lambda: dict(db_runtime.list_objects(owner or None, refresh), trace_id=trace_id))
+
+
+@app.get("/api/db/object")
+def db_object(owner: str = Query(...), name: str = Query(...), type: str = Query(...)):
+    """오브젝트 하나의 상세: 테이블이면 컬럼·제약·인덱스·참조 오브젝트, 프로시저류면 소스."""
+    trace_id = _new_trace()
+
+    def run():
+        d = db_runtime.object_detail(owner, name, type)
+        if d["type"] in ("TABLE", "VIEW", "MATERIALIZED VIEW", "SYNONYM"):
+            idx = get_index()
+            d["proc_usage"] = [u for u in idx.table_usage.get(d["name"], []) if u["kind"] != "cursor"]
+            col_usage = {}
+            for st in idx.statements.values():
+                if st["kind"] == "cursor" or not any(t["name"] == d["name"] for t in st.get("tables") or []):
+                    continue
+                for c in st.get("columns") or []:
+                    if c.get("table") == d["name"] or (not c.get("table") and d["name"] in (c.get("candidates") or [])):
+                        col_usage.setdefault(c["column"], set()).add(f"{st['program']}.{st['function']}")
+            d["column_usage"] = {k: sorted(v) for k, v in col_usage.items()}
+        return dict(d, trace_id=trace_id)
+    return _guard(trace_id, run)
+
+
 @app.get("/api/db/tables/{name}/rows")
 def db_rows(name: str, limit: int = Query(50, ge=1, le=1000), where: str = Query("")):
     trace_id = _new_trace()
@@ -338,7 +373,7 @@ def db_query(req: SqlRequest):
 
 def _run_impact(req: ImpactRequest) -> dict:
     scenario = req.model_dump(exclude={"run_db_checks"}, exclude_none=True)
-    result = analyze_impact(get_index(), scenario)
+    result = analyze_impact_live(get_index(), scenario)
     if req.run_db_checks and config.db_configured():
         for chk in result["db_checks"]:
             try:
