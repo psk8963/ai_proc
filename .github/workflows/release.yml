@@ -1,0 +1,72 @@
+# v* 태그를 push 하면 Windows 설치 프로그램을 만들어 GitHub 릴리스에 올린다.
+#   1) version.py 의 __version__ 을 올리고 커밋
+#   2) git tag v0.1.0 && git push origin v0.1.0
+# Actions 탭에서 수동 실행(workflow_dispatch)하면 릴리스 없이 설치 파일만 아티팩트로 남긴다.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: 버전 확인
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path version.py -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          "APP_VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "태그($env:GITHUB_REF_NAME)와 version.py($v)가 다릅니다"
+          }
+
+      - name: 테스트 (wheels 로 오프라인 설치)
+        shell: pwsh
+        run: |
+          python -m pip install --no-index --find-links wheels -r requirements-dev.txt
+          python -m pytest -q
+
+      - name: Inno Setup 준비
+        shell: pwsh
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 설치 프로그램 만들기
+        shell: pwsh
+        env:
+          BUILD_PYTHON: python
+        run: ./installer/build_installer.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProcImpactAgent-Setup-${{ env.APP_VERSION }}
+          path: build/out/*.exe
+
+      - name: GitHub 릴리스 만들기
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = "Windows 설치 프로그램 (관리자 권한 불필요, Python 포함)`n`n" +
+                   "- 설치: ProcImpactAgent-Setup-$env:APP_VERSION.exe 실행`n" +
+                   "- 처음 실행 시 메모장에서 DB 접속 정보(.env)를 넣고 다시 실행`n" +
+                   "- 데이터(등록 소스·분석 캐시·.env)는 %LOCALAPPDATA%\ProcImpactAgent 에 있어 업데이트해도 유지됩니다`n" +
+                   "- Oracle 11g 는 Instant Client 19 (64bit) 가 별도로 필요합니다 (README 4-2)"
+          gh release create "$env:GITHUB_REF_NAME" build/out/*.exe --title "v$env:APP_VERSION" --notes "$notes"

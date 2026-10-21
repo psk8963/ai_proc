@@ -411,7 +411,7 @@
             : `<div><span class="dot off"></span>접속 정보 없음 <span class="muted">(.env 설정)</span></div>`)
             + `<div class="muted" style="margin-top:4px">메타데이터: ${d.snapshot_taken_at ? esc(d.snapshot_tables) + '개 테이블 · ' + esc(d.snapshot_taken_at) : '없음'}</div>`;
         document.getElementById('refreshMetaBtn').disabled = !d.configured;
-        document.getElementById('llmInfo').textContent = `LLM: ${STATUS.llm.model} (${STATUS.llm.host})`;
+        document.getElementById('llmInfo').textContent = `v${STATUS.version} · LLM: ${STATUS.llm.model} (${STATUS.llm.host}) · 데이터: ${STATUS.data_dir}`;
         const sel = document.getElementById('impChange');
         if (!sel.options.length) {
             sel.innerHTML = Object.entries(STATUS.change_types).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join('');

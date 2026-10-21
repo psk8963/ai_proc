@@ -10,7 +10,8 @@ from fastapi.staticfiles import StaticFiles
 import config
 import db_runtime
 from agent_runtime import bound_history, build_agent_graph, explain_impact, is_llm_unavailable
-from config import BASE_DIR, MAX_UPLOAD_BYTES
+from config import BASE_DIR, DATA_DIR, MAX_UPLOAD_BYTES
+from version import __version__
 from db_runtime import DbError, SchemaMeta, column_type_text
 from impact_engine import CHANGE_TYPES, DATA_OPS, ScenarioError, analyze_impact_live
 from schemas import ChatResponse, ErrorEnvelope, Evidence, FolderImportRequest, ImpactRequest, SqlRequest
@@ -28,7 +29,7 @@ from source_repository import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("app")
 
-app = FastAPI(title="Pro*C Impact Agent - Local PoC")
+app = FastAPI(title="Pro*C Impact Agent - Local PoC", version=__version__)
 app.mount("/ui", StaticFiles(directory=str(BASE_DIR / "static"), html=True), name="static")
 
 
@@ -89,6 +90,8 @@ def status():
     idx = get_index()
     snap = db_runtime.load_snapshot()
     return {
+        "version": __version__,
+        "data_dir": str(DATA_DIR),
         "assets": idx.stats(),
         "db": {"configured": config.db_configured(), "dsn": config.ORACLE_DSN, "user": config.ORACLE_USER,
                "snapshot_taken_at": snap.get("taken_at"), "snapshot_tables": len(snap.get("tables") or {}),

@@ -13,6 +13,32 @@
 
 ---
 
+## 0. 설치 프로그램으로 쓰기 (권장)
+
+[Releases](https://github.com/psk8963/ai_proc/releases) 에서 `ProcImpactAgent-Setup-<버전>.exe` 를 받아 실행합니다.
+
+- **관리자 권한 없이** 사용자 폴더(`%LOCALAPPDATA%\Programs\ProcImpactAgent`)에 설치됩니다. Python 설치도 필요 없습니다(포함).
+- 시작 메뉴 **Pro*C 영향도 분석 에이전트** 를 누르면 서버 창이 뜨고 브라우저로 화면이 열립니다. 서버 창을 닫으면 종료됩니다.
+- 처음 실행하면 메모장으로 설정 파일(`.env`)이 열립니다. DB 접속 정보를 넣고 저장한 뒤 다시 실행하세요.
+  시작 메뉴의 **설정 파일 열기 (.env)** 로 언제든 고칠 수 있습니다.
+- 등록한 소스·분석 캐시·설정은 `%LOCALAPPDATA%\ProcImpactAgent` 에 저장되어 **새 버전을 덮어 설치해도 그대로** 남습니다.
+- Oracle 11g 서버라면 Instant Client 19(64bit)를 따로 풀어 두고 `.env` 의 `ORACLE_CLIENT_LIB_DIR` 에 경로를 넣습니다(4-2 참고).
+- 샘플 소스는 설치 폴더의 `app\samples` 에 있습니다.
+
+### 새 버전 릴리스하기 (개발자)
+
+1. `version.py` 의 `__version__` 을 올려 커밋합니다. (예: `0.1.1`)
+2. 같은 이름의 태그를 push 합니다.
+   ```powershell
+   git tag v0.1.1
+   git push origin main v0.1.1
+   ```
+3. GitHub Actions(`.github/workflows/release.yml`)가 Windows 에서 테스트 → 설치 파일 빌드 → **Releases 에 자동 등록**합니다.
+
+PC 에서 직접 만들려면 Python 3.14 와 [Inno Setup 6](https://jrsoftware.org/isdl.php) 을 설치하고
+`powershell -ExecutionPolicy Bypass -File installer\build_installer.ps1` 을 실행합니다(결과: `build\out\`).
+
+
 ## 1. 준비물
 
 | 항목 | 버전 / 비고 |
@@ -193,6 +219,10 @@ HOST_LONG_BITS=64               # Pro*C 가 도는 서버의 C long 크기 (64bi
 | `tests/` | 자동 테스트 · 샘플 소스/배치/스냅샷 (`tests/samples`) |
 | `source_repository/`, `analysis_index/` | 실행 중 생성 (git 제외) |
 | `make_wheels.bat` | `wheels` 폴더 만들기 |
+| `launcher.py` | 설치판 실행기 (서버 시작 + 브라우저 열기) |
+| `version.py` | 앱 버전 (릴리스 태그와 같아야 함) |
+| `installer/` | 설치 프로그램 빌드 스크립트 (Inno Setup) |
+| `.github/workflows/release.yml` | 태그 push 시 설치 프로그램 빌드 · 릴리스 |
 
 ## 8. 테스트
 

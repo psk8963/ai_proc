@@ -3,6 +3,9 @@ from pathlib import Path
 
 # 실행 위치(cwd)와 무관하게 프로젝트 폴더 기준으로 경로를 잡는다.
 BASE_DIR = Path(__file__).resolve().parent
+# 등록한 소스·분석 캐시·.env 를 두는 폴더. 소스 폴더에서 실행하면 프로젝트 폴더,
+# 설치 프로그램으로 실행하면 launcher.py 가 %LOCALAPPDATA%\ProcImpactAgent 로 지정한다(업데이트해도 유지).
+DATA_DIR = Path(os.getenv("PROC_AGENT_DATA_DIR") or BASE_DIR)
 
 
 def _load_dotenv(path: Path) -> None:
@@ -25,7 +28,9 @@ def _load_dotenv(path: Path) -> None:
 
 
 if not os.getenv("PROC_AGENT_NO_DOTENV"):
-    _load_dotenv(BASE_DIR / ".env")
+    _load_dotenv(DATA_DIR / ".env")
+    if DATA_DIR != BASE_DIR:
+        _load_dotenv(BASE_DIR / ".env")
 
 
 def _int_env(name: str, default: int) -> int:
@@ -72,8 +77,8 @@ DB_BYTES_PER_CHAR = _int_env("DB_BYTES_PER_CHAR", 3)
 HOST_LONG_BITS = _int_env("HOST_LONG_BITS", 64)
 
 # 자산 저장 경로
-SOURCE_REPOSITORY_DIR = os.getenv("SOURCE_REPOSITORY_DIR", str(BASE_DIR / "source_repository"))
-ANALYSIS_INDEX_DIR = os.getenv("ANALYSIS_INDEX_DIR", str(BASE_DIR / "analysis_index"))
+SOURCE_REPOSITORY_DIR = os.getenv("SOURCE_REPOSITORY_DIR", str(DATA_DIR / "source_repository"))
+ANALYSIS_INDEX_DIR = os.getenv("ANALYSIS_INDEX_DIR", str(DATA_DIR / "analysis_index"))
 SCHEMA_SNAPSHOT_PATH = os.getenv("SCHEMA_SNAPSHOT_PATH", str(Path(ANALYSIS_INDEX_DIR) / "schema_snapshot.json"))
 
 PROC_EXTS = (".pc", ".pcc", ".pc2", ".c", ".cpp", ".cc")
