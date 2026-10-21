@@ -11,6 +11,8 @@
   #define OutDir "..\build\out"
 #endif
 #define AppName "Pro*C 영향도 분석 에이전트"
+; 폴더·바로가기 이름에는 * 를 쓸 수 없어서 따로 둔다 (Windows 파일 이름 규칙)
+#define ShortName "ProC 영향도 분석 에이전트"
 #define AppExeName "ProcImpactAgent"
 
 [Setup]
@@ -24,7 +26,7 @@ VersionInfoVersion={#AppVersion}
 ; 관리자 권한 없이 사용자 폴더에 설치 (회사 PC 에서 권한 요청 없이 설치 가능)
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\{#AppExeName}
-DefaultGroupName={#AppName}
+DefaultGroupName={#ShortName}
 DisableProgramGroupPage=yes
 OutputDir={#OutDir}
 OutputBaseFilename={#AppExeName}-Setup-{#AppVersion}
@@ -55,12 +57,12 @@ Type: filesandordirs; Name: "{app}\app"
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\python\python.exe"; Parameters: """{app}\app\launcher.py"""; WorkingDir: "{app}\app"; Comment: "서버를 시작하고 브라우저로 화면을 엽니다"
+Name: "{group}\{#ShortName}"; Filename: "{app}\python\python.exe"; Parameters: """{app}\app\launcher.py"""; WorkingDir: "{app}\app"; Comment: "서버를 시작하고 브라우저로 화면을 엽니다"
 Name: "{group}\설정 파일 열기 (.env)"; Filename: "notepad.exe"; Parameters: """{localappdata}\ProcImpactAgent\.env"""
 Name: "{group}\데이터 폴더 열기"; Filename: "{localappdata}\ProcImpactAgent"
 Name: "{group}\사용 설명서 (README)"; Filename: "notepad.exe"; Parameters: """{app}\app\README.md"""
-Name: "{group}\{#AppName} 제거"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\python\python.exe"; Parameters: """{app}\app\launcher.py"""; WorkingDir: "{app}\app"; Tasks: desktopicon
+Name: "{group}\{#ShortName} 제거"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#ShortName}"; Filename: "{app}\python\python.exe"; Parameters: """{app}\app\launcher.py"""; WorkingDir: "{app}\app"; Tasks: desktopicon
 
 [Dirs]
 Name: "{localappdata}\ProcImpactAgent"; Flags: uninsneveruninstall
