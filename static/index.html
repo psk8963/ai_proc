@@ -452,7 +452,7 @@
         setStatus('dbStatus', '메타데이터 읽는 중… (테이블이 많으면 1~2분)');
         try {
             const r = await api('/api/db/refresh', { method: 'POST' });
-            setStatus('dbStatus', `${r.tables}개 테이블 (스키마: ${r.owners.join(', ')})`, 'ok');
+            setStatus('dbStatus', `${r.tables}개 테이블 (스키마: ${r.owners.join(', ')} · ${r.scope === 'referenced' ? '소스가 쓰는 테이블만' : '전체'})`, 'ok');
             loadStatus(); TABLES = null;
         } catch (e) { setStatus('dbStatus', e.message, 'err'); }
     }

@@ -92,6 +92,10 @@ def _wrap_db_error(e: Exception) -> DbError:
         return DbError("DB_UNAVAILABLE", f"DB 에 연결할 수 없습니다. ({code.group(1)}) 접속 정보와 네트워크를 확인해 주세요.", 503)
     if code and code.group(1) == "DPY-3010":
         return DbError("DB_VERSION", "DB 서버가 11g 라 thin 모드로 붙을 수 없습니다(DPY-3010). Instant Client 19 이상(64bit)을 받아 ORACLE_CLIENT_LIB_DIR 에 지정해 주세요. (Toad 가 쓰는 11g 클라이언트는 사용할 수 없습니다)", 503)
+    if code and code.group(1) in ("DPY-4024", "DPI-1067", "ORA-03136"):
+        return DbError("DB_TIMEOUT", f"DB 조회 시간이 제한을 넘었습니다({code.group(1)}). .env 의 DB_CALL_TIMEOUT_MS / META_CALL_TIMEOUT_MS 를 늘려 주세요.", 504)
+    if code and code.group(1) == "ORA-12154":
+        return DbError("DB_TNS", "접속 이름(TNS 별칭)을 찾지 못했습니다(ORA-12154). ORACLE_DSN 에 IP:포트/서비스명 을 직접 넣어 보세요.", 503)
     if code and code.group(1) == "ORA-01017":
         return DbError("DB_LOGIN_FAILED", "DB 계정 또는 비밀번호가 올바르지 않습니다. (ORA-01017)", 503)
     # 조회 SQL 오류(ORA-00942 등)는 사용자가 고칠 수 있게 메시지를 그대로 보여준다(비밀번호는 포함되지 않음)
@@ -220,44 +224,72 @@ def refresh_snapshot(referenced_tables: Optional[List[str]] = None) -> Dict:
     """DB 에서 메타데이터를 읽어 스냅샷을 새로 저장한다.
 
     대상 스키마: ORACLE_SCHEMAS(없으면 접속 계정) + 소스가 쓰는 테이블의 시노님이 가리키는 스키마.
+    ORACLE_META_SCOPE=referenced(기본)이면 등록된 소스가 쓰는 테이블만 읽는다(테이블이 수천 개인 스키마에서 빠름).
+    11g 의 ALL_* 뷰는 조인하면 매우 느려서, 뷰마다 따로 조회한 뒤 파이썬에서 합친다.
     """
     user = (test_connection().get("user") or config.ORACLE_USER).upper()
     owners = list(config.ORACLE_SCHEMAS) or [user]
-    synonyms: Dict[str, Dict] = {}
     refs = sorted({t.upper() for t in (referenced_tables or [])})
-    for chunk in _in_chunks(refs):
-        ph, binds = _bind_list("n", chunk)
-        r = run_readonly(
-            f"SELECT SYNONYM_NAME, TABLE_OWNER, TABLE_NAME, OWNER FROM ALL_SYNONYMS "
-            f"WHERE OWNER IN (:usr, 'PUBLIC') AND SYNONYM_NAME IN ({ph}) AND DB_LINK IS NULL",
-            dict(binds, usr=user), max_rows=5000, validate=False)
-        for syn, towner, tname, owner in r["rows"]:
-            # 내 스키마 시노님이 PUBLIC 보다 우선
-            if syn not in synonyms or owner != "PUBLIC":
+
+    synonyms: Dict[str, Dict] = {}
+    for clause, binds in _name_filter("SYNONYM_NAME", refs if refs else None, required=True):
+        rows = _meta_query(
+            "SELECT SYNONYM_NAME, TABLE_OWNER, TABLE_NAME, OWNER FROM ALL_SYNONYMS "
+            f"WHERE OWNER IN (:usr, 'PUBLIC') AND DB_LINK IS NULL{clause}", dict(binds, usr=user))
+        for syn, towner, tname, owner in rows:
+            if syn not in synonyms or owner != "PUBLIC":   # 내 스키마 시노님이 PUBLIC 보다 우선
                 synonyms[syn] = {"owner": towner, "table": tname}
-    for s in synonyms.values():
-        if s["owner"] not in owners:
-            owners.append(s["owner"])
+    for sy in synonyms.values():
+        if sy["owner"] not in owners:
+            owners.append(sy["owner"])
+
+    scope_names = None
+    if config.ORACLE_META_SCOPE != "all" and refs:
+        scope_names = sorted(set(refs) | {sy["table"] for sy in synonyms.values()})
 
     tables: Dict[str, Dict] = {}
     for owner in owners:
-        r = run_readonly(
-            "SELECT t.TABLE_NAME, t.NUM_ROWS, c.COMMENTS FROM ALL_TABLES t "
-            "LEFT JOIN ALL_TAB_COMMENTS c ON c.OWNER = t.OWNER AND c.TABLE_NAME = t.TABLE_NAME "
-            "WHERE t.OWNER = :o "
-            "UNION ALL SELECT v.VIEW_NAME, NULL, c.COMMENTS FROM ALL_VIEWS v "
-            "LEFT JOIN ALL_TAB_COMMENTS c ON c.OWNER = v.OWNER AND c.TABLE_NAME = v.VIEW_NAME WHERE v.OWNER = :o",
-            {"o": owner}, max_rows=5000, validate=False)
-        for name, num_rows, comment in r["rows"]:
+        logger.info("metadata owner=%s scope=%s", owner, "referenced" if scope_names else "all")
+        found = []
+        for clause, binds in _name_filter("TABLE_NAME", scope_names):
+            found += [(n, r) for n, r in _meta_query(
+                f"SELECT TABLE_NAME, NUM_ROWS FROM ALL_TABLES WHERE OWNER = :o{clause}", dict(binds, o=owner))]
+        for clause, binds in _name_filter("VIEW_NAME", scope_names):
+            found += [(n, None) for (n,) in _meta_query(
+                f"SELECT VIEW_NAME FROM ALL_VIEWS WHERE OWNER = :o{clause}", dict(binds, o=owner))]
+        for name, num_rows in found:
             key = name if name not in tables else f"{owner}.{name}"
-            tables[key] = {"owner": owner, "name": name, "comment": comment, "num_rows": num_rows,
+            tables[key] = {"owner": owner, "name": name, "comment": None, "num_rows": num_rows,
                            "columns": [], "pk": [], "unique": [], "fks": []}
-        _fetch_columns(owner, tables)
-        _fetch_constraints(owner, tables)
+        if not found:
+            continue
+        for clause, binds in _name_filter("TABLE_NAME", scope_names):
+            for tname, comment in _meta_query(
+                    f"SELECT TABLE_NAME, COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = :o AND COMMENTS IS NOT NULL{clause}",
+                    dict(binds, o=owner)):
+                key = _table_key(tables, owner, tname)
+                if key:
+                    tables[key]["comment"] = comment
+        _fetch_columns(owner, tables, scope_names)
+        _fetch_constraints(owner, tables, scope_names)
     snap = {"taken_at": _dt.datetime.now().isoformat(timespec="seconds"), "source": config.ORACLE_DSN,
-            "owners": owners, "tables": tables, "synonyms": synonyms}
+            "owners": owners, "scope": "referenced" if scope_names else "all", "tables": tables, "synonyms": synonyms}
     save_snapshot(snap)
-    return {"tables": len(tables), "owners": owners, "synonyms": len(synonyms), "taken_at": snap["taken_at"]}
+    return {"tables": len(tables), "owners": owners, "synonyms": len(synonyms), "taken_at": snap["taken_at"],
+            "scope": snap["scope"]}
+
+
+def _name_filter(column: str, names: Optional[List[str]], required: bool = False):
+    """names 가 있으면 ' AND column IN (...)' 조각을 900개씩 나눠 돌려준다. 없으면 조건 없이 한 번."""
+    if not names:
+        if required:
+            return []
+        return [("", {})]
+    out = []
+    for chunk in _in_chunks(names):
+        ph, binds = _bind_list("n", chunk)
+        out.append((f" AND {column} IN ({ph})", binds))
+    return out
 
 
 def _table_key(tables: Dict, owner: str, name: str) -> Optional[str]:
@@ -267,58 +299,76 @@ def _table_key(tables: Dict, owner: str, name: str) -> Optional[str]:
     return k if k in tables else None
 
 
-def _fetch_columns(owner: str, tables: Dict):
-    sql = ("SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.DATA_LENGTH, c.CHAR_LENGTH, c.CHAR_USED, "
-           "c.DATA_PRECISION, c.DATA_SCALE, c.NULLABLE, c.COLUMN_ID, m.COMMENTS "
-           "FROM ALL_TAB_COLUMNS c LEFT JOIN ALL_COL_COMMENTS m "
-           "ON m.OWNER = c.OWNER AND m.TABLE_NAME = c.TABLE_NAME AND m.COLUMN_NAME = c.COLUMN_NAME "
-           "WHERE c.OWNER = :o ORDER BY c.TABLE_NAME, c.COLUMN_ID")
-    r = _run_all(sql, {"o": owner})
-    for tname, col, dtype, dlen, clen, cused, prec, scale, nullable, cid, comment in r:
-        key = _table_key(tables, owner, tname)
+def _fetch_columns(owner: str, tables: Dict, names: Optional[List[str]] = None):
+    for clause, binds in _name_filter("TABLE_NAME", names):
+        rows = _meta_query(
+            "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, DATA_LENGTH, CHAR_LENGTH, CHAR_USED, "
+            "DATA_PRECISION, DATA_SCALE, NULLABLE, COLUMN_ID FROM ALL_TAB_COLUMNS "
+            f"WHERE OWNER = :o{clause}", dict(binds, o=owner))
+        for tname, col, dtype, dlen, clen, cused, prec, scale, nullable, cid in rows:
+            key = _table_key(tables, owner, tname)
+            if not key:
+                continue
+            length = clen if cused == "C" and clen else dlen
+            tables[key]["columns"].append({
+                "name": col, "type": re.sub(r"\(.*\)", "", dtype or ""), "length": length, "char_used": cused,
+                "byte_length": dlen, "precision": prec, "scale": scale, "nullable": nullable == "Y", "id": cid,
+                "comment": None,
+            })
+        for tname, col, comment in _meta_query(
+                "SELECT TABLE_NAME, COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS "
+                f"WHERE OWNER = :o AND COMMENTS IS NOT NULL{clause}", dict(binds, o=owner)):
+            key = _table_key(tables, owner, tname)
+            if key:
+                for c in tables[key]["columns"]:
+                    if c["name"] == col:
+                        c["comment"] = comment
+                        break
+    for t in tables.values():
+        if t["owner"] == owner:
+            t["columns"].sort(key=lambda c: c.get("id") or 0)
+
+
+def _fetch_constraints(owner: str, tables: Dict, names: Optional[List[str]] = None):
+    cons: Dict[tuple, Dict] = {}
+    for clause, binds in _name_filter("TABLE_NAME", names):
+        for tname, cname, ctype, rowner, rcname in _meta_query(
+                "SELECT TABLE_NAME, CONSTRAINT_NAME, CONSTRAINT_TYPE, R_OWNER, R_CONSTRAINT_NAME FROM ALL_CONSTRAINTS "
+                f"WHERE OWNER = :o AND CONSTRAINT_TYPE IN ('P','U','R'){clause}", dict(binds, o=owner)):
+            cons[(owner, cname)] = {"table": tname, "type": ctype, "r": (rowner, rcname) if rcname else None, "cols": []}
+        for tname, cname, col, pos in _meta_query(
+                "SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, POSITION FROM ALL_CONS_COLUMNS "
+                f"WHERE OWNER = :o{clause}", dict(binds, o=owner)):
+            c = cons.get((owner, cname))
+            if c:
+                c["cols"].append((pos or 0, col))
+    for c in cons.values():
+        c["cols"] = [col for _, col in sorted(c["cols"])]
+    # FK 가 가리키는 PK/UK 이름 → 테이블·컬럼 (같은 스키마 안에서 찾을 수 있는 것만)
+    for c in cons.values():
+        key = _table_key(tables, owner, c["table"])
         if not key:
             continue
-        length = clen if cused == "C" and clen else dlen
-        tables[key]["columns"].append({
-            "name": col, "type": re.sub(r"\(.*\)", "", dtype or ""), "length": length, "char_used": cused,
-            "byte_length": dlen, "precision": prec, "scale": scale, "nullable": nullable == "Y", "id": cid,
-            "comment": comment,
-        })
-
-
-def _fetch_constraints(owner: str, tables: Dict):
-    sql = ("SELECT c.TABLE_NAME, c.CONSTRAINT_NAME, c.CONSTRAINT_TYPE, cc.COLUMN_NAME, cc.POSITION, "
-           "r.TABLE_NAME AS R_TABLE, rc.COLUMN_NAME AS R_COLUMN "
-           "FROM ALL_CONSTRAINTS c JOIN ALL_CONS_COLUMNS cc ON cc.OWNER = c.OWNER AND cc.CONSTRAINT_NAME = c.CONSTRAINT_NAME "
-           "LEFT JOIN ALL_CONSTRAINTS r ON r.OWNER = c.R_OWNER AND r.CONSTRAINT_NAME = c.R_CONSTRAINT_NAME "
-           "LEFT JOIN ALL_CONS_COLUMNS rc ON rc.OWNER = r.OWNER AND rc.CONSTRAINT_NAME = r.CONSTRAINT_NAME AND rc.POSITION = cc.POSITION "
-           "WHERE c.OWNER = :o AND c.CONSTRAINT_TYPE IN ('P','U','R') ORDER BY c.TABLE_NAME, c.CONSTRAINT_NAME, cc.POSITION")
-    groups: Dict = {}
-    for tname, cname, ctype, col, pos, rtable, rcol in _run_all(sql, {"o": owner}):
-        key = _table_key(tables, owner, tname)
-        if key:
-            g = groups.setdefault((key, cname), {"type": ctype, "cols": [], "rtable": rtable, "rcols": []})
-            g["cols"].append(col)
-            if rcol:
-                g["rcols"].append(rcol)
-    for (key, _), g in groups.items():
         t = tables[key]
-        if g["type"] == "P":
-            t["pk"] = g["cols"]
-        elif g["type"] == "U":
-            t["unique"].append(g["cols"])
+        if c["type"] == "P":
+            t["pk"] = c["cols"]
+        elif c["type"] == "U":
+            t["unique"].append(c["cols"])
         else:
-            t["fks"].append({"columns": g["cols"], "ref_table": g["rtable"], "ref_columns": g["rcols"]})
+            ref = cons.get(c["r"]) if c["r"] else None
+            t["fks"].append({"columns": c["cols"], "ref_table": ref["table"] if ref else None,
+                             "ref_columns": ref["cols"] if ref else []})
 
 
-def _run_all(sql: str, params: Dict) -> List[List]:
-    """메타데이터 조회용: 행 수 제한 없이 전부 읽는다."""
+def _meta_query(sql: str, params: Dict) -> List[List]:
+    """메타데이터 조회용: 행 수 제한 없이 전부 읽는다. 제한 시간은 META_CALL_TIMEOUT_MS."""
     pool = _get_pool()
     try:
         with pool.acquire() as conn:
-            conn.call_timeout = max(config.DB_CALL_TIMEOUT_MS, 120000)
+            conn.call_timeout = config.META_CALL_TIMEOUT_MS
             cur = conn.cursor()
-            cur.arraysize = 2000
+            cur.arraysize = 5000
+            cur.prefetchrows = 5000
             cur.execute("SET TRANSACTION READ ONLY")
             cur.execute(sql, params)
             rows = [list(r) for r in cur.fetchall()]

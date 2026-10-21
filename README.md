@@ -98,6 +98,8 @@ HOST_LONG_BITS=64               # Pro*C 가 도는 서버의 C long 크기 (64bi
   Python 이 64bit 라 클라이언트도 64bit 여야 합니다. Instant Client 는 설치 없이 zip 만 풀면 되고, 기존 11g 클라이언트와 Toad 에는 영향이 없습니다.
   집 PC 에서 oracle.com 에서 받아 프로젝트 폴더(`C:\workspace\ai_proc\instantclient_19_xx`)에 풀어서 같이 옮기면 됩니다.
   Instant Client 19 를 쓰려면 **Visual C++ 2017 재배포 패키지(x64)** 가 PC 에 있어야 합니다.
+- **메타데이터 갱신은 소스를 먼저 등록한 뒤에** 누르세요. 기본(`ORACLE_META_SCOPE=referenced`)은 소스가 쓰는 테이블만 읽어서
+  11g 에서도 빠릅니다. 스키마 전체가 필요하면 `ORACLE_META_SCOPE=all` (오래 걸리면 `META_CALL_TIMEOUT_MS` 를 늘림).
 - 서버 실행 후 왼쪽 **연결 확인** → **메타데이터 갱신** 을 누르면 `analysis_index\schema_snapshot.json` 이 만들어집니다.
   이 파일을 집 PC 로 가져가면 DB 없이도 같은 메타데이터로 분석할 수 있습니다(회사 보안 정책을 먼저 확인하세요).
 

@@ -59,6 +59,10 @@ ORACLE_CLIENT_LIB_DIR = os.getenv("ORACLE_CLIENT_LIB_DIR", "")
 # tnsnames.ora 가 있는 폴더. 지정하면 ORACLE_DSN 에 Toad 에서 쓰는 TNS 별칭(예: PRODDB)을 그대로 쓸 수 있다.
 ORACLE_TNS_ADMIN = os.getenv("ORACLE_TNS_ADMIN", os.getenv("TNS_ADMIN", ""))
 DB_CALL_TIMEOUT_MS = _int_env("DB_CALL_TIMEOUT_MS", 30000)
+# 메타데이터 갱신용 제한 시간(11g 의 ALL_* 뷰는 느리다) — 기본 10분
+META_CALL_TIMEOUT_MS = _int_env("META_CALL_TIMEOUT_MS", 600000)
+# referenced: 등록된 소스가 쓰는 테이블만 메타데이터를 읽는다(빠름) / all: 스키마 전체
+ORACLE_META_SCOPE = os.getenv("ORACLE_META_SCOPE", "referenced").strip().lower()
 DB_MAX_ROWS = _int_env("DB_MAX_ROWS", 500)
 DB_POOL_MAX = _int_env("DB_POOL_MAX", 4)
 # VARCHAR2(n CHAR) 컬럼의 바이트 계산용. AL32UTF8=3, KO16MSWIN949=2
