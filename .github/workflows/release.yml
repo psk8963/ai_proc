@@ -1,13 +1,20 @@
-# v* 태그를 push 하면 Windows 설치 프로그램을 만들어 GitHub 릴리스에 올린다.
-#   1) version.py 의 __version__ 을 올리고 커밋
-#   2) git tag v0.1.0 && git push origin v0.1.0
+# Windows 설치 프로그램을 만들어 GitHub 릴리스에 올린다. 두 가지 방법 중 하나:
+#   A) version.py 를 올려 커밋한 뒤  git tag v0.1.1 && git push origin v0.1.1
+#   B) GitHub 웹 > Releases > Draft a new release 에서 태그 v0.1.1 로 릴리스를 발행(Publish)
+# 어느 쪽이든 빌드가 끝나면 설치 파일(.exe)이 그 릴리스에 첨부된다.
 # Actions 탭에서 수동 실행(workflow_dispatch)하면 릴리스 없이 설치 파일만 아티팩트로 남긴다.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -58,15 +65,23 @@ jobs:
           name: ProcImpactAgent-Setup-${{ env.APP_VERSION }}
           path: build/out/*.exe
 
-      - name: GitHub 릴리스 만들기
+      - name: GitHub 릴리스에 올리기
         if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $tag = $env:GITHUB_REF_NAME
           $notes = "Windows 설치 프로그램 (관리자 권한 불필요, Python 포함)`n`n" +
                    "- 설치: ProcImpactAgent-Setup-$env:APP_VERSION.exe 실행`n" +
                    "- 처음 실행 시 메모장에서 DB 접속 정보(.env)를 넣고 다시 실행`n" +
                    "- 데이터(등록 소스·분석 캐시·.env)는 %LOCALAPPDATA%\ProcImpactAgent 에 있어 업데이트해도 유지됩니다`n" +
                    "- Oracle 11g 는 Instant Client 19 (64bit) 가 별도로 필요합니다 (README 4-2)"
-          gh release create "$env:GITHUB_REF_NAME" build/out/*.exe --title "v$env:APP_VERSION" --notes "$notes"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag (Get-ChildItem build/out/*.exe).FullName --clobber
+            $body = gh release view $tag --json body --jq .body
+            if (-not $body) { gh release edit $tag --notes "$notes" }
+          } else {
+            gh release create $tag (Get-ChildItem build/out/*.exe).FullName --title "v$env:APP_VERSION" --notes "$notes"
+          }
