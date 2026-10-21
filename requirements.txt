@@ -8,5 +8,5 @@ python-multipart==0.0.32
 langchain-core==1.6.10
 langchain-ollama==1.1.0
 langgraph==1.2.15
-# Oracle 드라이버(thin 모드는 Instant Client 불필요). 처음 설치 후 `pip show oracledb` 버전으로 고정하세요.
-oracledb>=3.4
+# Oracle 드라이버(thin 모드는 Instant Client 불필요)
+oracledb==26.0.1

@@ -57,20 +57,20 @@ python -m uvicorn app:app --reload --port 8001
 
 ## 4. 회사 PC 설정
 
-### 4-1. 인터넷이 막힌 PC에 설치하기 (wheels)
+### 4-1. 인터넷이 막힌 PC에 설치하기 (wheels 포함)
 
-집 PC 에서 `make_wheels.bat` 를 더블클릭하면 `wheels` 폴더를 만들고 오프라인 설치까지 시험합니다
-(끝에 `make_wheels_log.txt` → `ALL_OK`). 프로젝트 폴더째 회사 PC 로 옮긴 뒤:
+저장소의 `wheels` 폴더에 필요한 패키지 설치 파일이 모두 들어 있습니다(**Windows 64bit + Python 3.14**, 테스트용 pytest 포함).
 
 ```powershell
 cd C:\workspace\ai_proc
 python -m venv venv
 venv\Scripts\activate
-python -m pip install --no-index --find-links wheels -r requirements.txt
+python -m pip install --no-index --find-links wheels -r requirements-dev.txt
+python -m pytest -q
 ```
 
-**Windows 64bit + Python 3.14** 기준입니다. 회사 PC 의 Python 버전이 다르면 그 버전으로 wheels 를 다시 만들어야 합니다.
-Ollama 모델은 ai_nexacro 와 같은 것을 쓰므로 추가로 옮길 것이 없습니다.
+패키지 버전이나 Python 버전을 바꿨으면 인터넷 되는 PC 에서 `make_wheels.bat` 로 `wheels` 를 다시 만듭니다
+(끝에 `make_wheels_log.txt` → `ALL_OK`). Ollama 모델은 ai_nexacro 와 같은 것을 쓰므로 추가로 옮길 것이 없습니다.
 
 ### 4-2. Oracle 접속 (.env)
 
